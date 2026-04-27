@@ -1,9 +1,9 @@
 seed: 42
 
 paths:
-  data_root: /Users/banworddd/University/Hakaton/data
-  train_annotation_dir: /Users/banworddd/University/Hakaton/data/train/annotation
-  output_dir: /Users/banworddd/University/Hakaton/oinkVision_belgau/outputs
+  data_root: data
+  train_annotation_dir: data/train/annotation
+  output_dir: baseline_run
 
 labels:
   - bad_posture
