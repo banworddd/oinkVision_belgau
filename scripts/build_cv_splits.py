@@ -38,26 +38,46 @@ def write_rows(rows: list[dict], path: Path) -> None:
         writer.writerows(rows)
 
 
+def group_rows(rows: list[dict]) -> tuple[list[str], list[list[dict]], np.ndarray]:
+    grouped_rows: dict[str, list[dict]] = {}
+    for row in rows:
+        group_id = str(row.get("source_pig_id") or row.get("pig_id"))
+        grouped_rows.setdefault(group_id, []).append(row)
+
+    group_ids = list(grouped_rows.keys())
+    groups = [grouped_rows[group_id] for group_id in group_ids]
+    labels = np.array(
+        [
+            f"{group[0]['bad_posture']}{group[0]['bumps']}{group[0]['soft_pastern']}{group[0]['x_shape']}"
+            for group in groups
+        ]
+    )
+    return group_ids, groups, labels
+
+
 def main() -> None:
     args = parse_args()
     rows = load_index(args.index_path)
-    labels = np.array([f"{r['bad_posture']}{r['bumps']}{r['soft_pastern']}{r['x_shape']}" for r in rows])
-    indices = np.arange(len(rows))
+    group_ids, groups, labels = group_rows(rows)
+    group_indices = np.arange(len(group_ids))
 
+    splitter = StratifiedKFold(n_splits=args.n_splits, shuffle=True, random_state=args.seed)
     try:
-        splitter = StratifiedKFold(n_splits=args.n_splits, shuffle=True, random_state=args.seed)
-        split_iter = splitter.split(indices, labels)
+        split_iter = list(splitter.split(group_indices, labels))
     except ValueError:
-        splitter = KFold(n_splits=args.n_splits, shuffle=True, random_state=args.seed)
-        split_iter = splitter.split(indices)
+        fallback_splitter = KFold(n_splits=args.n_splits, shuffle=True, random_state=args.seed)
+        split_iter = list(fallback_splitter.split(group_indices))
 
     for fold_idx, (train_idx, valid_idx) in enumerate(split_iter):
         fold_dir = args.output_dir / f"fold_{fold_idx}"
-        train_rows = [rows[i] for i in train_idx]
-        valid_rows = [rows[i] for i in valid_idx]
+        train_rows = [row for idx in train_idx for row in groups[int(idx)]]
+        valid_rows = [row for idx in valid_idx for row in groups[int(idx)]]
         write_rows(train_rows, fold_dir / "train.csv")
         write_rows(valid_rows, fold_dir / "valid.csv")
-        print(f"fold_{fold_idx}: train={len(train_rows)} valid={len(valid_rows)}")
+        print(
+            f"fold_{fold_idx}: train={len(train_rows)} valid={len(valid_rows)} "
+            f"(groups train={len(train_idx)} valid={len(valid_idx)})"
+        )
 
 
 if __name__ == "__main__":

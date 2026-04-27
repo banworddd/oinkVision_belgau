@@ -91,6 +91,38 @@ def choose_device() -> torch.device:
 
 
 def split_rows(rows: list[dict[str, Any]], seed: int, valid_size: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    has_groups = all("source_pig_id" in row for row in rows)
+    if has_groups:
+        grouped_rows: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            group_id = str(row.get("source_pig_id") or row.get("pig_id"))
+            grouped_rows.setdefault(group_id, []).append(row)
+        group_items = list(grouped_rows.items())
+        group_ids = [group_id for group_id, _ in group_items]
+        group_labels = []
+        for _, group in group_items:
+            group_labels.append(
+                f"{group[0]['bad_posture']}{group[0]['bumps']}{group[0]['soft_pastern']}{group[0]['x_shape']}"
+            )
+        try:
+            _, valid_group_ids = train_test_split(
+                group_ids,
+                test_size=valid_size,
+                random_state=seed,
+                stratify=group_labels,
+            )
+        except ValueError:
+            _, valid_group_ids = train_test_split(
+                group_ids,
+                test_size=valid_size,
+                random_state=seed,
+                shuffle=True,
+            )
+        valid_group_set = set(valid_group_ids)
+        train_rows = [row for row in rows if str(row.get("source_pig_id") or row.get("pig_id")) not in valid_group_set]
+        valid_rows = [row for row in rows if str(row.get("source_pig_id") or row.get("pig_id")) in valid_group_set]
+        return train_rows, valid_rows
+
     stratify_labels = [f"{row['bad_posture']}{row['bumps']}{row['soft_pastern']}{row['x_shape']}" for row in rows]
     try:
         train_rows, valid_rows = train_test_split(

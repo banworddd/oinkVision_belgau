@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -30,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--rebuild-splits", action="store_true")
+    parser.add_argument("--disable-xshape-index-augmentation", action="store_true")
     return parser.parse_args()
 
 
@@ -38,9 +40,35 @@ def run_command(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True)
 
 
+def load_config(config_path: Path) -> dict:
+    with config_path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
 def main() -> None:
     args = parse_args()
     python = sys.executable
+    config = load_config(args.config)
+
+    effective_index_path = args.index_path
+    xshape_aug_cfg = config.get("train", {}).get("xshape_index_augmentation", {})
+    use_xshape_index_augmentation = bool(xshape_aug_cfg.get("enabled", False)) and not args.disable_xshape_index_augmentation
+    if use_xshape_index_augmentation:
+        effective_index_path = args.index_path.with_name(f"{args.index_path.stem}_xshape_aug{args.index_path.suffix}")
+        run_command(
+            [
+                python,
+                str(PROJECT_ROOT / "scripts" / "augment_xshape_index.py"),
+                "--index-path",
+                str(args.index_path),
+                "--output-path",
+                str(effective_index_path),
+                "--target-xshape-count",
+                str(int(xshape_aug_cfg.get("target_xshape_count", 12))),
+                "--max-copies-per-row",
+                str(int(xshape_aug_cfg.get("max_copies_per_row", 24))),
+            ]
+        )
 
     if args.rebuild_splits or not args.splits_dir.exists():
         run_command(
@@ -48,7 +76,7 @@ def main() -> None:
                 python,
                 str(PROJECT_ROOT / "scripts" / "build_cv_splits.py"),
                 "--index-path",
-                str(args.index_path),
+                str(effective_index_path),
                 "--output-dir",
                 str(args.splits_dir),
                 "--n-splits",
@@ -130,6 +158,9 @@ def main() -> None:
 
     summary = {
         "config": str(args.config),
+        "index_path": str(args.index_path),
+        "effective_index_path": str(effective_index_path),
+        "xshape_index_augmentation_enabled": use_xshape_index_augmentation,
         "n_folds": len(fold_dirs),
         "macro_f1_mean": float(np.mean(fold_scores)),
         "macro_f1_std": float(np.std(fold_scores)),

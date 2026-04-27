@@ -448,6 +448,19 @@ python scripts/build_index.py
 python scripts/build_internal_split.py --config configs/baseline_server_v3.yaml
 ```
 
+### Rare-class expansion before split (`x_shape`)
+
+```bash
+python scripts/augment_xshape_index.py \
+  --index-path outputs/index/train_index.csv \
+  --output-path outputs/index/train_index_xshape_aug.csv \
+  --target-xshape-count 12
+
+python scripts/build_internal_split.py \
+  --config configs/baseline_server_v3.yaml \
+  --index-path outputs/index/train_index_xshape_aug.csv
+```
+
 ### Обучение
 
 ```bash

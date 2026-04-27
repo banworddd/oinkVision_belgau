@@ -18,7 +18,7 @@ cameras:
   - rear
 
 model:
-  backbone: tf_efficientnetv2_s.in21k_ft_in1k
+  backbone: efficientnet_b0
   pretrained: true
   num_classes: 4
 
@@ -36,15 +36,19 @@ augmentation:
   translate: 0.04
   scale_min: 0.96
   scale_max: 1.04
+  affine_prob: 0.5
   bbox_crop_jitter: 0.03
   rear_bbox_crop_jitter: 0.03
   xshape_bbox_crop_jitter: 0.04
+  xshape_synthetic_flag_key: is_xshape_augmented
+  color_only_for_synthetic_xshape: true
+  disable_geometry_for_synthetic_xshape: true
 
 train:
   valid_size: 0.2
   batch_size: 8
   num_workers: 4
-  epochs: 15
+  epochs: 10
   lr: 0.0002
   raw_sample_ratio: 0.35
   train_augmentations: true
@@ -56,6 +60,10 @@ train:
     bumps: 1.0
     soft_pastern: 1.8
     x_shape: 3.0
+  xshape_index_augmentation:
+    enabled: true
+    target_xshape_count: 12
+    max_copies_per_row: 24
   loss:
     type: asl
     gamma_pos: 0.0

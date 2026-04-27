@@ -181,47 +181,63 @@ class PigVideoDataset(Dataset):
         self.base_crop_jitter = float(self.augmentation_profile.get("bbox_crop_jitter", 0.0))
         self.rear_extra_crop_jitter = float(self.augmentation_profile.get("rear_bbox_crop_jitter", 0.0))
         self.xshape_extra_crop_jitter = float(self.augmentation_profile.get("xshape_bbox_crop_jitter", 0.0))
-
-        base_transforms: list[Any] = [
-            transforms.ToTensor(),
-            transforms.Resize((image_size, image_size), antialias=True),
-        ]
-        if augment:
-            base_transforms.extend(
-                [
-                    transforms.ColorJitter(
-                        brightness=float(self.augmentation_profile.get("brightness", 0.12)),
-                        contrast=float(self.augmentation_profile.get("contrast", 0.12)),
-                        saturation=float(self.augmentation_profile.get("saturation", 0.08)),
-                    ),
-                    transforms.RandomApply(
-                        [
-                            transforms.RandomAffine(
-                                degrees=float(self.augmentation_profile.get("degrees", 4.0)),
-                                translate=(
-                                    float(self.augmentation_profile.get("translate", 0.04)),
-                                    float(self.augmentation_profile.get("translate", 0.04)),
-                                ),
-                                scale=(
-                                    float(self.augmentation_profile.get("scale_min", 0.96)),
-                                    float(self.augmentation_profile.get("scale_max", 1.04)),
-                                ),
-                            )
-                        ],
-                        p=0.5,
-                    ),
-                ]
-            )
-        base_transforms.append(
-            transforms.Normalize(
-                mean=(0.485, 0.456, 0.406),
-                std=(0.229, 0.224, 0.225),
-            )
+        self.synthetic_xshape_flag_key = str(self.augmentation_profile.get("xshape_synthetic_flag_key", "is_xshape_augmented"))
+        self.color_only_for_synthetic_xshape = bool(
+            self.augmentation_profile.get("color_only_for_synthetic_xshape", True)
         )
-        self.transform = transforms.Compose(base_transforms)
+        self.disable_geometry_for_synthetic_xshape = bool(
+            self.augmentation_profile.get("disable_geometry_for_synthetic_xshape", True)
+        )
+        self.affine_prob = float(self.augmentation_profile.get("affine_prob", 0.5))
+
+        self.preprocess = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Resize((image_size, image_size), antialias=True),
+            ]
+        )
+        self.color_jitter = transforms.ColorJitter(
+            brightness=float(self.augmentation_profile.get("brightness", 0.12)),
+            contrast=float(self.augmentation_profile.get("contrast", 0.12)),
+            saturation=float(self.augmentation_profile.get("saturation", 0.08)),
+        )
+        self.affine = transforms.RandomAffine(
+            degrees=float(self.augmentation_profile.get("degrees", 4.0)),
+            translate=(
+                float(self.augmentation_profile.get("translate", 0.04)),
+                float(self.augmentation_profile.get("translate", 0.04)),
+            ),
+            scale=(
+                float(self.augmentation_profile.get("scale_min", 0.96)),
+                float(self.augmentation_profile.get("scale_max", 1.04)),
+            ),
+        )
+        self.normalize = transforms.Normalize(
+            mean=(0.485, 0.456, 0.406),
+            std=(0.229, 0.224, 0.225),
+        )
 
     def __len__(self) -> int:
         return len(self.rows)
+
+    def _is_synthetic_xshape_row(self, row: dict[str, Any]) -> bool:
+        return int(row.get("x_shape", 0)) == 1 and int(row.get(self.synthetic_xshape_flag_key, 0) or 0) == 1
+
+    def _apply_transforms(self, frame: np.ndarray, row: dict[str, Any]) -> torch.Tensor:
+        tensor = self.preprocess(frame)
+        if not self.augment:
+            return self.normalize(tensor)
+
+        tensor = self.color_jitter(tensor)
+        apply_geometry = True
+        if self.disable_geometry_for_synthetic_xshape and self._is_synthetic_xshape_row(row):
+            apply_geometry = False
+        if apply_geometry and random.random() < self.affine_prob:
+            tensor = self.affine(tensor)
+
+        if self.color_only_for_synthetic_xshape and self._is_synthetic_xshape_row(row):
+            return self.normalize(tensor)
+        return self.normalize(tensor)
 
     def _read_video_frame(self, video_path: str, frame_id: int) -> np.ndarray:
         capture = cv2.VideoCapture(video_path)
@@ -341,7 +357,7 @@ class PigVideoDataset(Dataset):
         for item in camera_items[: self.frames_per_camera]:
             frame = self._read_frame(pig_id, video_path, camera, item.frame_id)
             frame = self._crop_frame(frame, item.bboxes, camera=camera, row=row, index=index)
-            tensor = self.transform(frame)
+            tensor = self._apply_transforms(frame, row=row)
             images.append(tensor)
             mask.append(1)
 
