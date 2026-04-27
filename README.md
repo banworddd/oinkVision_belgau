@@ -120,7 +120,7 @@
    - `left/right`: задняя нога
    - `rear`: две задние ноги
 4. Каждый кадр кодируется CNN:
-   - `EfficientNet-B0`
+   - `EfficientNetV2-S`
    - `ImageNet pretrained`
 5. Для каждого кадра получаем `4 logits`.
 6. Затем идёт агрегация:
@@ -218,7 +218,9 @@
 
 - читает конфиг
 - строит `DataLoader`
-- считает `pos_weight` для `BCEWithLogitsLoss`
+- использует конфигурируемый loss:
+  - `BCEWithLogitsLoss + pos_weight`
+  - или `AsymmetricLoss`
 - обучает модель
 - валидируется на internal valid
 - сохраняет лучший чекпойнт:

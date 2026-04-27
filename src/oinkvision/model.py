@@ -14,7 +14,7 @@ class FrameClassifier(nn.Module):
 
     def __init__(
         self,
-        backbone_name: str = "efficientnet_b0",
+        backbone_name: str = "efficientnetv2_s",
         pretrained: bool = True,
         num_classes: int = 4,
     ) -> None:

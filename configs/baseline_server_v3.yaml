@@ -18,7 +18,7 @@ cameras:
   - rear
 
 model:
-  backbone: efficientnet_b0
+  backbone: efficientnetv2_s
   pretrained: true
   num_classes: 4
 
