@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from oinkvision.constants import LABELS
+from oinkvision.constants import CAMERAS, LABELS
 from oinkvision.dataset import PigVideoDataset, load_index
 from oinkvision.env import apply_env_overrides, get_output_root, load_local_env
 from oinkvision.metrics import compute_macro_f1
@@ -189,11 +189,99 @@ def compute_pos_weight(loader: DataLoader, device: torch.device) -> torch.Tensor
     return pos_weight.to(device)
 
 
-def aggregate_frame_logits(frame_logits: torch.Tensor, frame_mask: torch.Tensor) -> torch.Tensor:
-    mask = frame_mask.unsqueeze(-1)
-    masked_logits = frame_logits * mask
-    denom = torch.clamp(mask.sum(dim=1), min=1.0)
-    return masked_logits.sum(dim=1) / denom
+def build_aggregation_spec(config: dict[str, Any], device: torch.device) -> dict[str, Any]:
+    agg_cfg = config.get("aggregation", {})
+    cameras = list(config.get("cameras", CAMERAS))
+    frames_per_camera = int(config["data"]["frames_per_camera"])
+    topk = int(agg_cfg.get("topk", 2))
+
+    default_frame_mode = str(agg_cfg.get("default_frame_mode", "mean"))
+    frame_mode_map = agg_cfg.get("frame_modes", {})
+    frame_modes = [str(frame_mode_map.get(label, default_frame_mode)) for label in LABELS]
+
+    default_camera_weights = agg_cfg.get("default_camera_weights", {camera: 1.0 for camera in cameras})
+    camera_weights_cfg = agg_cfg.get("camera_weights", {})
+    camera_weights = []
+    for label in LABELS:
+        label_weights = camera_weights_cfg.get(label, default_camera_weights)
+        camera_weights.append([float(label_weights.get(camera, default_camera_weights.get(camera, 1.0))) for camera in cameras])
+
+    return {
+        "cameras": cameras,
+        "frames_per_camera": frames_per_camera,
+        "topk": topk,
+        "frame_modes": frame_modes,
+        "camera_weights": torch.tensor(camera_weights, dtype=torch.float32, device=device),
+    }
+
+
+def _masked_reduce_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    masked_values = values * mask
+    denom = torch.clamp(mask.sum(dim=2), min=1.0)
+    return masked_values.sum(dim=2) / denom
+
+
+def _masked_reduce_max(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    mask_bool = mask.bool()
+    masked_values = values.masked_fill(~mask_bool, float("-inf"))
+    reduced = masked_values.max(dim=2).values
+    return torch.where(torch.isfinite(reduced), reduced, torch.zeros_like(reduced))
+
+
+def _masked_reduce_topk_mean(values: torch.Tensor, mask: torch.Tensor, topk: int) -> torch.Tensor:
+    mask_bool = mask.bool()
+    masked_values = values.masked_fill(~mask_bool, float("-inf"))
+    sorted_values, _ = masked_values.sort(dim=2, descending=True)
+    k = min(topk, values.shape[2])
+    topk_values = sorted_values[:, :, :k, :]
+    valid_counts = mask_bool.sum(dim=2)
+    topk_indices = torch.arange(k, device=values.device).view(1, 1, k, 1)
+    topk_mask = topk_indices < valid_counts.unsqueeze(2)
+    safe_topk = torch.where(topk_mask, topk_values, torch.zeros_like(topk_values))
+    denom = torch.clamp(topk_mask.sum(dim=2), min=1)
+    return safe_topk.sum(dim=2) / denom
+
+
+def aggregate_frame_logits(
+    frame_logits: torch.Tensor,
+    frame_mask: torch.Tensor,
+    aggregation_spec: dict[str, Any] | None = None,
+) -> torch.Tensor:
+    if aggregation_spec is None:
+        mask = frame_mask.unsqueeze(-1)
+        masked_logits = frame_logits * mask
+        denom = torch.clamp(mask.sum(dim=1), min=1.0)
+        return masked_logits.sum(dim=1) / denom
+
+    num_cameras = len(aggregation_spec["cameras"])
+    frames_per_camera = int(aggregation_spec["frames_per_camera"])
+    total_expected_frames = num_cameras * frames_per_camera
+    if frame_logits.shape[1] != total_expected_frames:
+        mask = frame_mask.unsqueeze(-1)
+        masked_logits = frame_logits * mask
+        denom = torch.clamp(mask.sum(dim=1), min=1.0)
+        return masked_logits.sum(dim=1) / denom
+
+    batch_size, _, num_labels = frame_logits.shape
+    logits_by_camera = frame_logits.view(batch_size, num_cameras, frames_per_camera, num_labels)
+    mask_by_camera = frame_mask.view(batch_size, num_cameras, frames_per_camera, 1)
+
+    camera_logits = torch.zeros(batch_size, num_cameras, num_labels, device=frame_logits.device, dtype=frame_logits.dtype)
+    for label_idx, mode in enumerate(aggregation_spec["frame_modes"]):
+        label_values = logits_by_camera[:, :, :, label_idx : label_idx + 1]
+        if mode == "max":
+            reduced = _masked_reduce_max(label_values, mask_by_camera)
+        elif mode == "topk_mean":
+            reduced = _masked_reduce_topk_mean(label_values, mask_by_camera, topk=int(aggregation_spec["topk"]))
+        else:
+            reduced = _masked_reduce_mean(label_values, mask_by_camera)
+        camera_logits[:, :, label_idx] = reduced.squeeze(-1)
+
+    camera_presence = (mask_by_camera.sum(dim=2) > 0).float()
+    camera_weights = aggregation_spec["camera_weights"].transpose(0, 1).unsqueeze(0)
+    effective_weights = camera_weights * camera_presence
+    denom = torch.clamp(effective_weights.sum(dim=1), min=1.0)
+    return (camera_logits * effective_weights).sum(dim=1) / denom
 
 
 def run_epoch(
@@ -202,6 +290,7 @@ def run_epoch(
     optimizer: torch.optim.Optimizer | None,
     criterion: nn.Module,
     device: torch.device,
+    aggregation_spec: dict[str, Any] | None = None,
 ) -> tuple[float, np.ndarray, np.ndarray]:
     is_train = optimizer is not None
     model.train(is_train)
@@ -220,7 +309,7 @@ def run_epoch(
 
         with torch.set_grad_enabled(is_train):
             frame_logits = model(flat_images).view(batch_size, num_frames, len(LABELS))
-            logits = aggregate_frame_logits(frame_logits, frame_mask)
+            logits = aggregate_frame_logits(frame_logits, frame_mask, aggregation_spec=aggregation_spec)
             loss = criterion(logits, targets)
 
             if is_train:
@@ -261,6 +350,7 @@ def main() -> None:
         valid_index_path=args.valid_index,
     )
     model = build_model(config).to(device)
+    aggregation_spec = build_aggregation_spec(config, device)
 
     pos_weight = compute_pos_weight(train_loader, device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
@@ -284,8 +374,15 @@ def main() -> None:
     thresholds = [float(config["inference"]["thresholds"][label]) for label in LABELS]
 
     for epoch in range(1, int(config["train"]["epochs"]) + 1):
-        train_loss, _, _ = run_epoch(model, train_loader, optimizer, criterion, device)
-        valid_loss, valid_targets, valid_probs = run_epoch(model, valid_loader, None, criterion, device)
+        train_loss, _, _ = run_epoch(model, train_loader, optimizer, criterion, device, aggregation_spec=aggregation_spec)
+        valid_loss, valid_targets, valid_probs = run_epoch(
+            model,
+            valid_loader,
+            None,
+            criterion,
+            device,
+            aggregation_spec=aggregation_spec,
+        )
         metrics = compute_macro_f1(valid_targets, valid_probs, thresholds=thresholds)
 
         epoch_result = {

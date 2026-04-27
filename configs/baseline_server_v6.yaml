@@ -1,0 +1,86 @@
+seed: 42
+
+paths:
+  data_root: data
+  train_annotation_dir: data/train/annotation
+  output_dir: server_run_v6
+
+labels:
+  - bad_posture
+  - bumps
+  - soft_pastern
+  - x_shape
+
+cameras:
+  - top
+  - right
+  - left
+  - rear
+
+model:
+  backbone: efficientnet_b0
+  pretrained: true
+  num_classes: 4
+
+data:
+  image_size: 224
+  frames_per_camera: 4
+  use_bbox_crops: true
+  frame_cache_dir: frame_cache
+
+train:
+  valid_size: 0.2
+  batch_size: 8
+  num_workers: 4
+  epochs: 16
+  lr: 0.00018
+  train_augmentations: false
+  use_weighted_sampler: false
+  use_plateau_scheduler: true
+  scheduler_mode: max
+  scheduler_factor: 0.5
+  scheduler_patience: 2
+  min_lr: 0.00003
+  early_stopping_patience: 4
+
+aggregation:
+  default_frame_mode: mean
+  topk: 2
+  frame_modes:
+    bad_posture: topk_mean
+    bumps: mean
+    soft_pastern: max
+    x_shape: max
+  default_camera_weights:
+    top: 1.0
+    right: 1.0
+    left: 1.0
+    rear: 1.0
+  camera_weights:
+    bad_posture:
+      top: 0.15
+      right: 0.25
+      left: 0.25
+      rear: 0.35
+    bumps:
+      top: 0.10
+      right: 0.30
+      left: 0.30
+      rear: 0.30
+    soft_pastern:
+      top: 0.05
+      right: 0.45
+      left: 0.45
+      rear: 0.05
+    x_shape:
+      top: 0.05
+      right: 0.15
+      left: 0.15
+      rear: 0.65
+
+inference:
+  thresholds:
+    bad_posture: 0.5
+    bumps: 0.5
+    soft_pastern: 0.5
+    x_shape: 0.5

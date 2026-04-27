@@ -24,7 +24,7 @@ from oinkvision.dataset import PigVideoDataset, load_index
 from oinkvision.env import apply_env_overrides, get_output_root, load_local_env
 from oinkvision.metrics import apply_thresholds, compute_macro_f1
 from oinkvision.model import build_model
-from oinkvision.train import aggregate_frame_logits, choose_device
+from oinkvision.train import aggregate_frame_logits, build_aggregation_spec, choose_device
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,6 +102,7 @@ def predict(
     model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
+    aggregation_spec: dict[str, Any] | None = None,
 ) -> tuple[list[str], np.ndarray, np.ndarray]:
     model.eval()
     pig_ids: list[str] = []
@@ -116,7 +117,7 @@ def predict(
         batch_size, num_frames, channels, height, width = images.shape
         flat_images = images.view(batch_size * num_frames, channels, height, width)
         frame_logits = model(flat_images).view(batch_size, num_frames, len(LABELS))
-        logits = aggregate_frame_logits(frame_logits, frame_mask)
+        logits = aggregate_frame_logits(frame_logits, frame_mask, aggregation_spec=aggregation_spec)
         probs = torch.sigmoid(logits).cpu().numpy()
 
         pig_ids.extend(batch["pig_id"])
@@ -170,13 +171,14 @@ def main() -> None:
     args = parse_args()
     config = load_config(args.config)
     device = choose_device()
+    aggregation_spec = build_aggregation_spec(config, device)
 
     model = build_model(config).to(device)
     state_dict = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(state_dict)
 
     loader = build_loader(config, args.index_path, args.limit)
-    pig_ids, targets, probs = predict(model, loader, device)
+    pig_ids, targets, probs = predict(model, loader, device, aggregation_spec=aggregation_spec)
 
     if args.thresholds_json is not None:
         with args.thresholds_json.open("r", encoding="utf-8") as f:
