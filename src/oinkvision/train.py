@@ -265,8 +265,20 @@ def main() -> None:
     pos_weight = compute_pos_weight(train_loader, device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(config["train"]["lr"]))
+    scheduler = None
+    scheduler_mode = str(config["train"].get("scheduler_mode", "max"))
+    if bool(config["train"].get("use_plateau_scheduler", False)):
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode=scheduler_mode,
+            factor=float(config["train"].get("scheduler_factor", 0.5)),
+            patience=int(config["train"].get("scheduler_patience", 2)),
+            min_lr=float(config["train"].get("min_lr", 1e-6)),
+        )
 
     best_score = -1.0
+    epochs_without_improvement = 0
+    early_stopping_patience = int(config["train"].get("early_stopping_patience", 0))
     history = []
 
     thresholds = [float(config["inference"]["thresholds"][label]) for label in LABELS]
@@ -282,12 +294,18 @@ def main() -> None:
             "valid_loss": valid_loss,
             "macro_f1": metrics["macro_f1"],
             "per_class_f1": metrics["per_class_f1"],
+            "lr": float(optimizer.param_groups[0]["lr"]),
         }
         history.append(epoch_result)
         print(epoch_result)
 
+        if scheduler is not None:
+            monitor_value = metrics["macro_f1"] if scheduler_mode == "max" else valid_loss
+            scheduler.step(monitor_value)
+
         if metrics["macro_f1"] > best_score:
             best_score = metrics["macro_f1"]
+            epochs_without_improvement = 0
             torch.save(model.state_dict(), output_dir / "best_model.pt")
             save_json(
                 {
@@ -296,10 +314,23 @@ def main() -> None:
                     "thresholds": thresholds,
                     "train_index": str(args.train_index) if args.train_index is not None else str(args.index_path),
                     "valid_index": str(args.valid_index) if args.valid_index is not None else "internal_split_from_index",
+                    "epochs_ran": len(history),
                     "history": history,
                 },
                 output_dir / "train_summary.json",
             )
+        else:
+            epochs_without_improvement += 1
+
+        if early_stopping_patience > 0 and epochs_without_improvement >= early_stopping_patience:
+            print(
+                {
+                    "early_stopping": True,
+                    "stopped_epoch": epoch,
+                    "best_macro_f1": best_score,
+                }
+            )
+            break
 
 
 if __name__ == "__main__":
