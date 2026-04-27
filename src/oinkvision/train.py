@@ -287,6 +287,7 @@ def build_aggregation_spec(config: dict[str, Any], device: torch.device) -> dict
         "topk": topk,
         "frame_modes": frame_modes,
         "camera_weights": torch.tensor(camera_weights, dtype=torch.float32, device=device),
+        "xshape_aux_weight": float(config.get("train", {}).get("xshape_aux_weight", 0.0)),
     }
 
 
@@ -359,6 +360,39 @@ def aggregate_frame_logits(
     return (camera_logits * effective_weights).sum(dim=1) / denom
 
 
+def aggregate_rear_xshape_aux_logits(
+    frame_aux_logits: torch.Tensor,
+    frame_mask: torch.Tensor,
+    aggregation_spec: dict[str, Any] | None = None,
+) -> torch.Tensor:
+    if aggregation_spec is None:
+        masked_logits = frame_aux_logits * frame_mask
+        denom = torch.clamp(frame_mask.sum(dim=1), min=1.0)
+        return masked_logits.sum(dim=1) / denom
+
+    cameras = aggregation_spec.get("cameras", CAMERAS)
+    frames_per_camera = int(aggregation_spec["frames_per_camera"])
+    total_expected_frames = len(cameras) * frames_per_camera
+    if frame_aux_logits.shape[1] != total_expected_frames:
+        masked_logits = frame_aux_logits * frame_mask
+        denom = torch.clamp(frame_mask.sum(dim=1), min=1.0)
+        return masked_logits.sum(dim=1) / denom
+
+    if "rear" in cameras:
+        rear_index = cameras.index("rear")
+        rear_slice_start = rear_index * frames_per_camera
+        rear_slice_end = rear_slice_start + frames_per_camera
+        rear_logits = frame_aux_logits[:, rear_slice_start:rear_slice_end]
+        rear_mask = frame_mask[:, rear_slice_start:rear_slice_end].bool()
+        rear_logits = rear_logits.masked_fill(~rear_mask, float("-inf"))
+        reduced = rear_logits.max(dim=1).values
+        return torch.where(torch.isfinite(reduced), reduced, torch.zeros_like(reduced))
+
+    masked_logits = frame_aux_logits * frame_mask
+    denom = torch.clamp(frame_mask.sum(dim=1), min=1.0)
+    return masked_logits.sum(dim=1) / denom
+
+
 def run_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -374,6 +408,8 @@ def run_epoch(
     all_targets = []
     all_probs = []
 
+    aux_weight = float(aggregation_spec.get("xshape_aux_weight", 0.0)) if aggregation_spec is not None else 0.0
+
     for batch in tqdm(loader, leave=False):
         images = batch["images"].to(device)
         frame_mask = batch["frame_mask"].to(device)
@@ -383,9 +419,26 @@ def run_epoch(
         flat_images = images.view(batch_size * num_frames, channels, height, width)
 
         with torch.set_grad_enabled(is_train):
-            frame_logits = model(flat_images).view(batch_size, num_frames, len(LABELS))
+            model_output = model(flat_images)
+            if isinstance(model_output, dict):
+                frame_logits = model_output["logits"].view(batch_size, num_frames, len(LABELS))
+                frame_xshape_aux_logits = model_output.get("xshape_aux_logits")
+                if frame_xshape_aux_logits is not None:
+                    frame_xshape_aux_logits = frame_xshape_aux_logits.view(batch_size, num_frames)
+            else:
+                frame_logits = model_output.view(batch_size, num_frames, len(LABELS))
+                frame_xshape_aux_logits = None
             logits = aggregate_frame_logits(frame_logits, frame_mask, aggregation_spec=aggregation_spec)
             loss = criterion(logits, targets)
+            if frame_xshape_aux_logits is not None and aux_weight > 0.0:
+                xshape_aux_logits = aggregate_rear_xshape_aux_logits(
+                    frame_xshape_aux_logits,
+                    frame_mask=frame_mask,
+                    aggregation_spec=aggregation_spec,
+                )
+                xshape_targets = targets[:, LABELS.index("x_shape")]
+                aux_loss = nn.functional.binary_cross_entropy_with_logits(xshape_aux_logits, xshape_targets)
+                loss = loss + aux_weight * aux_loss
 
             if is_train:
                 optimizer.zero_grad()

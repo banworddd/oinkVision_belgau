@@ -17,7 +17,7 @@ import torch
 from oinkvision.infer import build_loader, load_config, predict
 from oinkvision.metrics import compute_macro_f1, optimize_thresholds
 from oinkvision.model import build_model
-from oinkvision.train import choose_device
+from oinkvision.train import build_aggregation_spec, choose_device
 from oinkvision.env import get_output_root, load_local_env
 
 
@@ -36,13 +36,20 @@ def main() -> None:
     args = parse_args()
     config = load_config(args.config)
     device = choose_device()
+    aggregation_spec = build_aggregation_spec(config, device)
 
     model = build_model(config).to(device)
     state_dict = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(state_dict)
 
     loader = build_loader(config, args.index_path, limit=None)
-    _, targets, probs, has_target = predict(model, loader, device)
+    _, targets, probs, has_target = predict(
+        model,
+        loader,
+        device,
+        aggregation_spec=aggregation_spec,
+        xshape_aux_blend_weight=float(config.get("inference", {}).get("xshape_aux_blend_weight", 0.0)),
+    )
     if not bool(has_target.all()):
         raise ValueError("Threshold tuning requires targets, but the provided index has unlabeled rows.")
 

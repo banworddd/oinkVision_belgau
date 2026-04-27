@@ -502,6 +502,21 @@ python scripts/run_kfold_cv.py \
   --rebuild-splits
 ```
 
+`cv_summary.json` теперь содержит:
+- `macro_f1_mean` (классический macro по всем классам),
+- `macro_f1_present_classes_mean` (без штрафа за классы с нулевым support в конкретном fold),
+- `macro_f1_mean_xshape_present_folds` и `num_folds_with_xshape_positive`.
+
+### Geometry fusion tuning
+
+```bash
+python scripts/tune_geometry_fusion.py \
+  --config configs/baseline_server_v3.yaml \
+  --index-path outputs/splits/valid_split.csv \
+  --checkpoint outputs/server_run_v3/best_model.pt \
+  --output-json outputs/server_run_v3/tuned_geometry_fusion.json
+```
+
 ### Raw val/test index
 
 ```bash

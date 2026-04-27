@@ -96,7 +96,13 @@ def main() -> None:
 
     rows = load_rows_for_index(args.index_path, limit=None)
     loader = build_loader(config, args.index_path, limit=None)
-    _, targets, probs, has_target = predict(model, loader, device, aggregation_spec=aggregation_spec)
+    _, targets, probs, has_target = predict(
+        model,
+        loader,
+        device,
+        aggregation_spec=aggregation_spec,
+        xshape_aux_blend_weight=float(config.get("inference", {}).get("xshape_aux_blend_weight", 0.0)),
+    )
     if not bool(has_target.all()):
         raise ValueError("Geometry fusion tuning requires labeled rows with annotation paths.")
 

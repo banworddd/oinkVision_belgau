@@ -25,7 +25,7 @@ from oinkvision.env import apply_env_overrides, get_output_root, load_local_env
 from oinkvision.geometry import aggregate_annotation_geometry
 from oinkvision.metrics import apply_thresholds, compute_macro_f1
 from oinkvision.model import build_model
-from oinkvision.train import aggregate_frame_logits, build_aggregation_spec, choose_device
+from oinkvision.train import aggregate_frame_logits, aggregate_rear_xshape_aux_logits, build_aggregation_spec, choose_device
 
 
 def parse_args() -> argparse.Namespace:
@@ -153,6 +153,7 @@ def predict(
     loader: DataLoader,
     device: torch.device,
     aggregation_spec: dict[str, Any] | None = None,
+    xshape_aux_blend_weight: float = 0.0,
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
     model.eval()
     pig_ids: list[str] = []
@@ -168,9 +169,26 @@ def predict(
 
         batch_size, num_frames, channels, height, width = images.shape
         flat_images = images.view(batch_size * num_frames, channels, height, width)
-        frame_logits = model(flat_images).view(batch_size, num_frames, len(LABELS))
+        model_output = model(flat_images)
+        if isinstance(model_output, dict):
+            frame_logits = model_output["logits"].view(batch_size, num_frames, len(LABELS))
+            frame_xshape_aux_logits = model_output.get("xshape_aux_logits")
+            if frame_xshape_aux_logits is not None:
+                frame_xshape_aux_logits = frame_xshape_aux_logits.view(batch_size, num_frames)
+        else:
+            frame_logits = model_output.view(batch_size, num_frames, len(LABELS))
+            frame_xshape_aux_logits = None
         logits = aggregate_frame_logits(frame_logits, frame_mask, aggregation_spec=aggregation_spec)
         probs = torch.sigmoid(logits).cpu().numpy()
+        if frame_xshape_aux_logits is not None and xshape_aux_blend_weight > 0.0:
+            aux_logits = aggregate_rear_xshape_aux_logits(
+                frame_xshape_aux_logits,
+                frame_mask=frame_mask,
+                aggregation_spec=aggregation_spec,
+            )
+            aux_probs = torch.sigmoid(aux_logits).cpu().numpy()
+            xshape_idx = LABELS.index("x_shape")
+            probs[:, xshape_idx] = (1.0 - xshape_aux_blend_weight) * probs[:, xshape_idx] + xshape_aux_blend_weight * aux_probs
 
         pig_ids.extend(batch["pig_id"])
         all_targets.append(targets)
@@ -240,7 +258,14 @@ def main() -> None:
 
     rows = load_rows_for_index(args.index_path, args.limit)
     loader = build_loader(config, args.index_path, args.limit)
-    pig_ids, targets, probs, has_target = predict(model, loader, device, aggregation_spec=aggregation_spec)
+    xshape_aux_blend_weight = float(config.get("inference", {}).get("xshape_aux_blend_weight", 0.0))
+    pig_ids, targets, probs, has_target = predict(
+        model,
+        loader,
+        device,
+        aggregation_spec=aggregation_spec,
+        xshape_aux_blend_weight=xshape_aux_blend_weight,
+    )
 
     postprocess_params = None
     if args.thresholds_json is not None:

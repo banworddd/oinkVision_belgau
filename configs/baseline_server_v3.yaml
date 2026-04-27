@@ -21,6 +21,7 @@ model:
   backbone: efficientnet_b0
   pretrained: true
   num_classes: 4
+  use_xshape_aux_head: true
 
 data:
   image_size: 224
@@ -43,6 +44,14 @@ augmentation:
   xshape_synthetic_flag_key: is_xshape_augmented
   color_only_for_synthetic_xshape: true
   disable_geometry_for_synthetic_xshape: true
+  detector_crop:
+    enabled: true
+    min_area_ratio: 0.02
+    expand_ratio: 0.15
+  rear_view_normalization:
+    enabled: true
+    clahe_clip_limit: 2.0
+    clahe_tile: 8
 
 train:
   valid_size: 0.2
@@ -64,6 +73,7 @@ train:
     enabled: true
     target_xshape_count: 12
     max_copies_per_row: 24
+  xshape_aux_weight: 0.35
   loss:
     type: asl
     gamma_pos: 0.0
@@ -71,6 +81,7 @@ train:
     clip: 0.03
 
 inference:
+  xshape_aux_blend_weight: 0.35
   thresholds:
     bad_posture: 0.5
     bumps: 0.5
@@ -78,7 +89,7 @@ inference:
     x_shape: 0.5
 
 postprocess:
-  enable_geometry_fusion: false
+  enable_geometry_fusion: true
   geometry_fusion:
     bad_posture:
       feature: max_bad_posture_score

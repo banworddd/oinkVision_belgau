@@ -26,14 +26,22 @@ def compute_macro_f1(
     preds = apply_thresholds(probs, thresholds)
     per_class = {}
     scores = []
+    supports: dict[str, int] = {}
+    present_scores = []
     for idx, label in enumerate(LABELS):
-        score = f1_score(targets[:, idx], preds[:, idx], zero_division=0)
+        class_targets = targets[:, idx]
+        score = f1_score(class_targets, preds[:, idx], zero_division=0)
         per_class[label] = float(score)
+        supports[label] = int(np.sum(class_targets))
         scores.append(score)
+        if supports[label] > 0:
+            present_scores.append(score)
 
     return {
         "macro_f1": float(np.mean(scores)),
+        "macro_f1_present_classes": float(np.mean(present_scores)) if present_scores else 0.0,
         "per_class_f1": per_class,
+        "per_class_support": supports,
         "thresholds": [float(x) for x in np.asarray(thresholds, dtype=np.float32)],
     }
 

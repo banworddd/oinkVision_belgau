@@ -93,7 +93,9 @@ def main() -> None:
     args.runs_dir.mkdir(parents=True, exist_ok=True)
 
     fold_scores = []
+    fold_scores_present_classes = []
     fold_payloads = []
+    xshape_present_scores = []
 
     for fold_dir in fold_dirs:
         fold_name = fold_dir.name
@@ -154,6 +156,10 @@ def main() -> None:
         with metrics_path.open("r", encoding="utf-8") as f:
             metrics = json.load(f)
         fold_scores.append(float(metrics["macro_f1"]))
+        fold_scores_present_classes.append(float(metrics.get("macro_f1_present_classes", metrics["macro_f1"])))
+        xshape_support = int(metrics.get("per_class_support", {}).get("x_shape", 0))
+        if xshape_support > 0:
+            xshape_present_scores.append(float(metrics["macro_f1"]))
         fold_payloads.append({"fold": fold_name, **metrics})
 
     summary = {
@@ -164,6 +170,10 @@ def main() -> None:
         "n_folds": len(fold_dirs),
         "macro_f1_mean": float(np.mean(fold_scores)),
         "macro_f1_std": float(np.std(fold_scores)),
+        "macro_f1_present_classes_mean": float(np.mean(fold_scores_present_classes)),
+        "macro_f1_present_classes_std": float(np.std(fold_scores_present_classes)),
+        "macro_f1_mean_xshape_present_folds": float(np.mean(xshape_present_scores)) if xshape_present_scores else 0.0,
+        "num_folds_with_xshape_positive": int(len(xshape_present_scores)),
         "folds": fold_payloads,
     }
     summary_path = args.runs_dir / "cv_summary.json"

@@ -181,6 +181,14 @@ class PigVideoDataset(Dataset):
         self.base_crop_jitter = float(self.augmentation_profile.get("bbox_crop_jitter", 0.0))
         self.rear_extra_crop_jitter = float(self.augmentation_profile.get("rear_bbox_crop_jitter", 0.0))
         self.xshape_extra_crop_jitter = float(self.augmentation_profile.get("xshape_bbox_crop_jitter", 0.0))
+        detector_cfg = self.augmentation_profile.get("detector_crop", {})
+        self.enable_detector_crop_fallback = bool(detector_cfg.get("enabled", False))
+        self.detector_min_area_ratio = float(detector_cfg.get("min_area_ratio", 0.02))
+        self.detector_expand_ratio = float(detector_cfg.get("expand_ratio", 0.15))
+        rear_norm_cfg = self.augmentation_profile.get("rear_view_normalization", {})
+        self.enable_rear_view_normalization = bool(rear_norm_cfg.get("enabled", False))
+        self.rear_clahe_clip_limit = float(rear_norm_cfg.get("clahe_clip_limit", 2.0))
+        self.rear_clahe_tile = int(rear_norm_cfg.get("clahe_tile", 8))
         self.synthetic_xshape_flag_key = str(self.augmentation_profile.get("xshape_synthetic_flag_key", "is_xshape_augmented"))
         self.color_only_for_synthetic_xshape = bool(
             self.augmentation_profile.get("color_only_for_synthetic_xshape", True)
@@ -287,6 +295,48 @@ class PigVideoDataset(Dataset):
                     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return self._read_video_frame(video_path, frame_id)
 
+    def _detect_foreground_bbox(self, frame: np.ndarray) -> tuple[int, int, int, int] | None:
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, mask = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+        contour = max(contours, key=cv2.contourArea)
+        area = float(cv2.contourArea(contour))
+        height, width = frame.shape[:2]
+        if area < self.detector_min_area_ratio * float(height * width):
+            return None
+        x, y, w, h = cv2.boundingRect(contour)
+        if w <= 1 or h <= 1:
+            return None
+        pad_x = int(w * self.detector_expand_ratio)
+        pad_y = int(h * self.detector_expand_ratio)
+        x1 = max(x - pad_x, 0)
+        y1 = max(y - pad_y, 0)
+        x2 = min(x + w + pad_x, width)
+        y2 = min(y + h + pad_y, height)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        return x1, y1, x2, y2
+
+    def _normalize_rear_view(self, crop: np.ndarray) -> np.ndarray:
+        if not self.enable_rear_view_normalization:
+            return crop
+        if crop.size == 0:
+            return crop
+        lab = cv2.cvtColor(crop, cv2.COLOR_RGB2LAB)
+        l_channel, a_channel, b_channel = cv2.split(lab)
+        clahe = cv2.createCLAHE(
+            clipLimit=self.rear_clahe_clip_limit,
+            tileGridSize=(self.rear_clahe_tile, self.rear_clahe_tile),
+        )
+        l_channel = clahe.apply(l_channel)
+        normalized = cv2.merge((l_channel, a_channel, b_channel))
+        return cv2.cvtColor(normalized, cv2.COLOR_LAB2RGB)
+
     def _crop_frame(
         self,
         frame: np.ndarray,
@@ -295,11 +345,19 @@ class PigVideoDataset(Dataset):
         row: dict[str, Any],
         index: int,
     ) -> np.ndarray:
-        if not self.use_bbox_crops or not bboxes:
+        if not self.use_bbox_crops:
             return frame
 
         height, width = frame.shape[:2]
-        xyxy_boxes = [bbox_yolo_to_xyxy(item["bbox"], width, height) for item in bboxes]
+        if bboxes:
+            xyxy_boxes = [bbox_yolo_to_xyxy(item["bbox"], width, height) for item in bboxes]
+        elif self.enable_detector_crop_fallback:
+            detected = self._detect_foreground_bbox(frame)
+            if detected is None:
+                return frame
+            xyxy_boxes = [detected]
+        else:
+            return frame
 
         x1 = min(box[0] for box in xyxy_boxes)
         y1 = min(box[1] for box in xyxy_boxes)
@@ -336,7 +394,10 @@ class PigVideoDataset(Dataset):
 
         if x2 <= x1 or y2 <= y1:
             return frame
-        return frame[y1:y2, x1:x2]
+        crop = frame[y1:y2, x1:x2]
+        if camera == "rear":
+            crop = self._normalize_rear_view(crop)
+        return crop
 
     def _empty_image(self) -> torch.Tensor:
         return torch.zeros(3, self.image_size, self.image_size, dtype=torch.float32)
