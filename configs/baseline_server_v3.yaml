@@ -82,6 +82,19 @@ train:
 
 inference:
   xshape_aux_blend_weight: 0.35
+  xshape_specialist_fusion:
+    enabled: true
+    weight_main: 0.45
+    weight_aux: 0.35
+    weight_geometry: 0.20
+    geometry_feature: max_xshape_score
+  threshold_fallbacks:
+    min_support: 1
+    thresholds:
+      bad_posture: 0.35
+      bumps: 0.10
+      soft_pastern: 0.30
+      x_shape: 0.30
   thresholds:
     bad_posture: 0.5
     bumps: 0.5

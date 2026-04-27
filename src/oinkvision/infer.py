@@ -115,6 +115,7 @@ def maybe_apply_geometry_fusion(
     probs: np.ndarray,
     config: dict[str, Any],
     postprocess_params: dict[str, Any] | None = None,
+    skip_labels: set[str] | None = None,
 ) -> np.ndarray:
     cfg = dict(config.get("postprocess", {}))
     if postprocess_params is not None:
@@ -125,12 +126,15 @@ def maybe_apply_geometry_fusion(
 
     per_class_cfg = cfg.get("geometry_fusion", {})
     fused = probs.copy()
+    skip_labels = skip_labels or set()
     for row_idx, row in enumerate(rows):
         annotation_path = str(row.get("annotation_path", "")).strip()
         if not annotation_path:
             continue
         features = aggregate_annotation_geometry(load_annotation(annotation_path))
         for label_idx, label in enumerate(LABELS):
+            if label in skip_labels:
+                continue
             label_cfg = per_class_cfg.get(label)
             if not label_cfg:
                 continue
@@ -147,18 +151,57 @@ def maybe_apply_geometry_fusion(
     return fused
 
 
+def maybe_apply_xshape_specialist_fusion(
+    rows: list[dict[str, Any]],
+    main_probs: np.ndarray,
+    aux_probs: np.ndarray | None,
+    config: dict[str, Any],
+) -> tuple[np.ndarray, bool]:
+    fused = main_probs.copy()
+    infer_cfg = dict(config.get("inference", {}))
+    specialist_cfg = dict(infer_cfg.get("xshape_specialist_fusion", {}))
+    enabled = bool(specialist_cfg.get("enabled", False))
+    xshape_idx = LABELS.index("x_shape")
+
+    if enabled:
+        w_main = float(specialist_cfg.get("weight_main", 0.5))
+        w_aux = float(specialist_cfg.get("weight_aux", 0.3))
+        w_geometry = float(specialist_cfg.get("weight_geometry", 0.2))
+        geometry_feature = str(specialist_cfg.get("geometry_feature", "max_xshape_score"))
+        denom = max(w_main + w_aux + w_geometry, 1e-6)
+        for row_idx, row in enumerate(rows):
+            annotation_path = str(row.get("annotation_path", "")).strip()
+            geometry_score = 0.0
+            if annotation_path:
+                geometry = aggregate_annotation_geometry(load_annotation(annotation_path))
+                geometry_score = float(geometry.get(geometry_feature, 0.0))
+            base_main = float(main_probs[row_idx, xshape_idx])
+            base_aux = float(aux_probs[row_idx]) if aux_probs is not None else base_main
+            fused[row_idx, xshape_idx] = (
+                w_main * base_main + w_aux * base_aux + w_geometry * geometry_score
+            ) / denom
+        return fused, True
+
+    xshape_aux_blend_weight = float(infer_cfg.get("xshape_aux_blend_weight", 0.0))
+    if aux_probs is not None and xshape_aux_blend_weight > 0.0:
+        fused[:, xshape_idx] = (
+            (1.0 - xshape_aux_blend_weight) * fused[:, xshape_idx] + xshape_aux_blend_weight * aux_probs
+        )
+    return fused, False
+
+
 @torch.no_grad()
 def predict(
     model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
     aggregation_spec: dict[str, Any] | None = None,
-    xshape_aux_blend_weight: float = 0.0,
-) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     model.eval()
     pig_ids: list[str] = []
     all_targets = []
-    all_probs = []
+    all_main_probs = []
+    all_aux_probs = []
     all_has_target = []
 
     for batch in tqdm(loader, leave=False):
@@ -179,26 +222,29 @@ def predict(
             frame_logits = model_output.view(batch_size, num_frames, len(LABELS))
             frame_xshape_aux_logits = None
         logits = aggregate_frame_logits(frame_logits, frame_mask, aggregation_spec=aggregation_spec)
-        probs = torch.sigmoid(logits).cpu().numpy()
-        if frame_xshape_aux_logits is not None and xshape_aux_blend_weight > 0.0:
+        main_probs = torch.sigmoid(logits).cpu().numpy()
+        if frame_xshape_aux_logits is not None:
             aux_logits = aggregate_rear_xshape_aux_logits(
                 frame_xshape_aux_logits,
                 frame_mask=frame_mask,
                 aggregation_spec=aggregation_spec,
             )
             aux_probs = torch.sigmoid(aux_logits).cpu().numpy()
-            xshape_idx = LABELS.index("x_shape")
-            probs[:, xshape_idx] = (1.0 - xshape_aux_blend_weight) * probs[:, xshape_idx] + xshape_aux_blend_weight * aux_probs
+        else:
+            aux_probs = np.full(batch_size, np.nan, dtype=np.float32)
 
         pig_ids.extend(batch["pig_id"])
         all_targets.append(targets)
-        all_probs.append(probs)
+        all_main_probs.append(main_probs)
+        all_aux_probs.append(aux_probs)
         all_has_target.append(has_target)
 
     targets_np = np.concatenate(all_targets, axis=0)
-    probs_np = np.concatenate(all_probs, axis=0)
+    main_probs_np = np.concatenate(all_main_probs, axis=0)
+    aux_probs_np = np.concatenate(all_aux_probs, axis=0)
+    aux_probs_result = None if np.isnan(aux_probs_np).all() else aux_probs_np
     has_target_np = np.concatenate(all_has_target, axis=0)
-    return pig_ids, targets_np, probs_np, has_target_np
+    return pig_ids, targets_np, main_probs_np, has_target_np, aux_probs_result
 
 
 def write_predictions(
@@ -258,13 +304,11 @@ def main() -> None:
 
     rows = load_rows_for_index(args.index_path, args.limit)
     loader = build_loader(config, args.index_path, args.limit)
-    xshape_aux_blend_weight = float(config.get("inference", {}).get("xshape_aux_blend_weight", 0.0))
-    pig_ids, targets, probs, has_target = predict(
+    pig_ids, targets, main_probs, has_target, aux_probs = predict(
         model,
         loader,
         device,
         aggregation_spec=aggregation_spec,
-        xshape_aux_blend_weight=xshape_aux_blend_weight,
     )
 
     postprocess_params = None
@@ -276,7 +320,19 @@ def main() -> None:
     else:
         thresholds = [float(config["inference"]["thresholds"][label]) for label in LABELS]
 
-    probs = maybe_apply_geometry_fusion(rows, probs, config, postprocess_params=postprocess_params)
+    probs, specialist_enabled = maybe_apply_xshape_specialist_fusion(
+        rows=rows,
+        main_probs=main_probs,
+        aux_probs=aux_probs,
+        config=config,
+    )
+    probs = maybe_apply_geometry_fusion(
+        rows,
+        probs,
+        config,
+        postprocess_params=postprocess_params,
+        skip_labels={"x_shape"} if specialist_enabled else None,
+    )
     preds = apply_thresholds(probs, thresholds)
     metrics = None
     if bool(has_target.all()):
