@@ -43,6 +43,16 @@ def parse_args() -> argparse.Namespace:
         default=output_root / "index" / "train_index.csv",
     )
     parser.add_argument(
+        "--train-index",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
+        "--valid-index",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         default=None,
@@ -89,10 +99,12 @@ def split_rows(rows: list[dict[str, Any]], seed: int, valid_size: float) -> tupl
     return train_rows, valid_rows
 
 
-def build_dataloaders(config: dict[str, Any], index_path: Path) -> tuple[DataLoader, DataLoader]:
-    rows = load_index(index_path)
-    train_rows, valid_rows = split_rows(rows, seed=config["seed"], valid_size=config["train"]["valid_size"])
-
+def build_dataloaders_from_rows(
+    config: dict[str, Any],
+    train_rows: list[dict[str, Any]],
+    valid_rows: list[dict[str, Any]],
+    index_path: Path,
+) -> tuple[DataLoader, DataLoader]:
     common_kwargs = {
         "index_path": index_path,
         "frames_per_camera": config["data"]["frames_per_camera"],
@@ -117,6 +129,22 @@ def build_dataloaders(config: dict[str, Any], index_path: Path) -> tuple[DataLoa
         num_workers=config["train"]["num_workers"],
     )
     return train_loader, valid_loader
+
+
+def build_dataloaders(
+    config: dict[str, Any],
+    index_path: Path,
+    train_index_path: Path | None = None,
+    valid_index_path: Path | None = None,
+) -> tuple[DataLoader, DataLoader]:
+    if train_index_path is not None and valid_index_path is not None:
+        train_rows = load_index(train_index_path)
+        valid_rows = load_index(valid_index_path)
+        return build_dataloaders_from_rows(config, train_rows, valid_rows, train_index_path)
+
+    rows = load_index(index_path)
+    train_rows, valid_rows = split_rows(rows, seed=config["seed"], valid_size=config["train"]["valid_size"])
+    return build_dataloaders_from_rows(config, train_rows, valid_rows, index_path)
 
 
 def compute_pos_weight(loader: DataLoader, device: torch.device) -> torch.Tensor:
@@ -195,7 +223,12 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     device = choose_device()
-    train_loader, valid_loader = build_dataloaders(config, args.index_path)
+    train_loader, valid_loader = build_dataloaders(
+        config,
+        args.index_path,
+        train_index_path=args.train_index,
+        valid_index_path=args.valid_index,
+    )
     model = build_model(config).to(device)
 
     pos_weight = compute_pos_weight(train_loader, device)
@@ -230,6 +263,8 @@ def main() -> None:
                     "best_epoch": epoch,
                     "best_macro_f1": best_score,
                     "thresholds": thresholds,
+                    "train_index": str(args.train_index) if args.train_index is not None else str(args.index_path),
+                    "valid_index": str(args.valid_index) if args.valid_index is not None else "internal_split_from_index",
                     "history": history,
                 },
                 output_dir / "train_summary.json",
