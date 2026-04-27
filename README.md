@@ -114,4 +114,3 @@ oinkVision_belgau/
 3. Implement a dataset that samples annotated frames from all 4 cameras.
 4. Train an `EfficientNet-B0` multi-label baseline with `BCEWithLogitsLoss`.
 5. Tune class thresholds on the internal validation split.
-
