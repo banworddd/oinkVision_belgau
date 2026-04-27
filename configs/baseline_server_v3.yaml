@@ -34,6 +34,16 @@ train:
   num_workers: 4
   epochs: 25
   lr: 0.0002
+  raw_sample_ratio: 0.35
+  train_augmentations: true
+  use_weighted_sampler: true
+  sampler_power: 0.7
+  sampler_max_weight: 8.0
+  loss:
+    type: asl
+    gamma_pos: 0.0
+    gamma_neg: 2.0
+    clip: 0.03
 
 inference:
   thresholds:

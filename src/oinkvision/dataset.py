@@ -165,6 +165,7 @@ class PigVideoDataset(Dataset):
         use_bbox_crops: bool = True,
         frame_cache_dir: str | Path | None = None,
         augment: bool = False,
+        raw_sample_ratio: float = 0.0,
         rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self.rows = rows if rows is not None else load_index(index_path)
@@ -174,6 +175,7 @@ class PigVideoDataset(Dataset):
         self.use_bbox_crops = use_bbox_crops
         self.frame_cache_dir = Path(frame_cache_dir) if frame_cache_dir else None
         self.augment = augment
+        self.raw_sample_ratio = float(np.clip(raw_sample_ratio, 0.0, 1.0))
         base_transforms: list[Any] = [
             transforms.ToTensor(),
             transforms.Resize((image_size, image_size), antialias=True),
@@ -272,7 +274,8 @@ class PigVideoDataset(Dataset):
 
     def _build_frame_plan(self, row: dict[str, Any], index: int) -> list[FrameSample]:
         annotation_path = str(row.get("annotation_path", "")).strip()
-        if annotation_path:
+        use_raw_sampling = bool(self.raw_sample_ratio > 0.0 and random.Random(self.seed + index).random() < self.raw_sample_ratio)
+        if annotation_path and not use_raw_sampling:
             annotation = load_annotation(annotation_path)
             return collect_frame_samples(
                 annotation=annotation,

@@ -62,6 +62,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+    )
     return parser.parse_args()
 
 
@@ -121,11 +126,13 @@ def build_dataloaders_from_rows(
     train_dataset = PigVideoDataset(
         rows=train_rows,
         augment=bool(config["train"].get("train_augmentations", False)),
+        raw_sample_ratio=float(config["train"].get("raw_sample_ratio", 0.0)),
         **common_kwargs,
     )
     valid_dataset = PigVideoDataset(
         rows=valid_rows,
         augment=False,
+        raw_sample_ratio=0.0,
         **common_kwargs,
     )
 
@@ -192,6 +199,32 @@ def compute_pos_weight(loader: DataLoader, device: torch.device) -> torch.Tensor
     negatives = target_tensor.shape[0] - positives
     pos_weight = negatives / torch.clamp(positives, min=1.0)
     return pos_weight.to(device)
+
+
+class AsymmetricLoss(nn.Module):
+    """Asymmetric focal-style BCE for long-tailed multi-label classification."""
+
+    def __init__(self, gamma_pos: float = 0.0, gamma_neg: float = 2.0, clip: float = 0.05, eps: float = 1e-8) -> None:
+        super().__init__()
+        self.gamma_pos = float(gamma_pos)
+        self.gamma_neg = float(gamma_neg)
+        self.clip = float(clip)
+        self.eps = float(eps)
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = torch.sigmoid(logits)
+        if self.clip > 0:
+            probs = torch.clamp(probs, min=self.clip, max=1.0 - self.clip)
+        xs_pos = probs
+        xs_neg = 1.0 - probs
+
+        loss = targets * torch.log(xs_pos.clamp(min=self.eps))
+        loss = loss + (1.0 - targets) * torch.log(xs_neg.clamp(min=self.eps))
+
+        gamma = self.gamma_pos * targets + self.gamma_neg * (1.0 - targets)
+        pt = xs_pos * targets + xs_neg * (1.0 - targets)
+        asymmetric_weight = torch.pow(1.0 - pt, gamma)
+        return (-loss * asymmetric_weight).mean()
 
 
 def build_aggregation_spec(config: dict[str, Any], device: torch.device) -> dict[str, Any]:
@@ -345,6 +378,8 @@ def main() -> None:
     if args.output_dir is not None:
         config.setdefault("paths", {})
         config["paths"]["output_dir"] = str(args.output_dir)
+    if args.seed is not None:
+        config["seed"] = int(args.seed)
     set_seed(int(config["seed"]))
 
     output_dir = Path(config["paths"]["output_dir"])
@@ -360,8 +395,17 @@ def main() -> None:
     model = build_model(config).to(device)
     aggregation_spec = build_aggregation_spec(config, device)
 
-    pos_weight = compute_pos_weight(train_loader, device)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    loss_cfg = dict(config["train"].get("loss", {}))
+    loss_type = str(loss_cfg.get("type", "bce")).lower()
+    if loss_type == "asl":
+        criterion = AsymmetricLoss(
+            gamma_pos=float(loss_cfg.get("gamma_pos", 0.0)),
+            gamma_neg=float(loss_cfg.get("gamma_neg", 2.0)),
+            clip=float(loss_cfg.get("clip", 0.05)),
+        )
+    else:
+        pos_weight = compute_pos_weight(train_loader, device)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(config["train"]["lr"]))
     scheduler = None
     scheduler_mode = str(config["train"].get("scheduler_mode", "max"))
