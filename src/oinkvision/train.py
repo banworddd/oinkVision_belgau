@@ -67,6 +67,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
     )
+    parser.add_argument(
+        "--init-checkpoint",
+        type=Path,
+        default=None,
+    )
     return parser.parse_args()
 
 
@@ -552,6 +557,16 @@ def main() -> None:
         valid_index_path=args.valid_index,
     )
     model = build_model(config).to(device)
+    if args.init_checkpoint is not None:
+        init_state = torch.load(args.init_checkpoint, map_location=device)
+        load_result = model.load_state_dict(init_state, strict=False)
+        print(
+            {
+                "init_checkpoint": str(args.init_checkpoint),
+                "missing_keys": list(load_result.missing_keys),
+                "unexpected_keys": list(load_result.unexpected_keys),
+            }
+        )
     aggregation_spec = build_aggregation_spec(config, device)
 
     loss_cfg = dict(config["train"].get("loss", {}))
