@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=PROJECT_ROOT / "configs" / "baseline.yaml",
+        default=PROJECT_ROOT / "configs" / "baseline_server_v3.yaml",
     )
     parser.add_argument(
         "--index-path",

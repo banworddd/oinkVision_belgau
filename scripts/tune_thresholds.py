@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     load_local_env()
     output_root = get_output_root()
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs" / "baseline_laptop.yaml")
+    parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs" / "baseline_server_v3.yaml")
     parser.add_argument("--index-path", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, default=output_root / "tuned_thresholds.json")

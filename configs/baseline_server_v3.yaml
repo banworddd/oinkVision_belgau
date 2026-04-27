@@ -41,3 +41,19 @@ inference:
     bumps: 0.5
     soft_pastern: 0.5
     x_shape: 0.5
+
+postprocess:
+  enable_geometry_fusion: false
+  geometry_fusion:
+    bad_posture:
+      feature: max_bad_posture_score
+      mode: weighted_sum
+      alpha: 0.0
+    soft_pastern:
+      feature: max_soft_pastern_score
+      mode: max_scaled
+      alpha: 0.5
+    x_shape:
+      feature: max_xshape_score
+      mode: max_scaled
+      alpha: 1.0

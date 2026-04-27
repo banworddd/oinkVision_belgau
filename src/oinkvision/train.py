@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=PROJECT_ROOT / "configs" / "baseline.yaml",
+        default=PROJECT_ROOT / "configs" / "baseline_server_v3.yaml",
     )
     parser.add_argument(
         "--index-path",
@@ -55,6 +55,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--epochs",
         type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
         default=None,
     )
     return parser.parse_args()
@@ -337,6 +342,9 @@ def main() -> None:
     config = load_config(args.config)
     if args.epochs is not None:
         config["train"]["epochs"] = args.epochs
+    if args.output_dir is not None:
+        config.setdefault("paths", {})
+        config["paths"]["output_dir"] = str(args.output_dir)
     set_seed(int(config["seed"]))
 
     output_dir = Path(config["paths"]["output_dir"])
