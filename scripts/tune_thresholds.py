@@ -42,7 +42,9 @@ def main() -> None:
     model.load_state_dict(state_dict)
 
     loader = build_loader(config, args.index_path, limit=None)
-    _, targets, probs = predict(model, loader, device)
+    _, targets, probs, has_target = predict(model, loader, device)
+    if not bool(has_target.all()):
+        raise ValueError("Threshold tuning requires targets, but the provided index has unlabeled rows.")
 
     base_thresholds = [float(config["inference"]["thresholds"][k]) for k in ["bad_posture", "bumps", "soft_pastern", "x_shape"]]
     base_metrics = compute_macro_f1(targets, probs, thresholds=base_thresholds)

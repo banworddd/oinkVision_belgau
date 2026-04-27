@@ -23,6 +23,7 @@ class FrameSample:
     frame_id: int
     camera: str
     bboxes: list[dict[str, Any]]
+    source: str = "annotation"
 
 
 def load_index(index_path: str | Path) -> list[dict[str, Any]]:
@@ -36,6 +37,7 @@ def load_index(index_path: str | Path) -> list[dict[str, Any]]:
         "bumps",
         "soft_pastern",
         "x_shape",
+        "has_target",
         "num_annotated_frames",
         "annotated_top_frames",
         "annotated_right_frames",
@@ -44,7 +46,7 @@ def load_index(index_path: str | Path) -> list[dict[str, Any]]:
     ]
     for row in rows:
         for field in int_fields:
-            row[field] = int(row[field])
+            row[field] = int(row.get(field, 0) or 0)
     return rows
 
 
@@ -64,7 +66,7 @@ def build_cache_frame_path(
 
 
 def get_target_vector(row: dict[str, Any]) -> list[int]:
-    return [int(row[label]) for label in LABELS]
+    return [int(row.get(label, 0)) for label in LABELS]
 
 
 def collect_frame_samples(
@@ -103,6 +105,34 @@ def collect_frame_samples(
         sampled.extend(selected)
 
     return sampled
+
+
+def get_video_num_frames(video_path: str | Path) -> int:
+    capture = cv2.VideoCapture(str(video_path))
+    num_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    capture.release()
+    return max(num_frames, 1)
+
+
+def collect_uniform_frame_samples(
+    video_path: str | Path,
+    camera: str,
+    frames_per_camera: int,
+) -> list[FrameSample]:
+    num_frames = get_video_num_frames(video_path)
+    if frames_per_camera <= 1:
+        frame_ids = [max(num_frames // 2, 0)]
+    else:
+        frame_ids = np.linspace(0, max(num_frames - 1, 0), num=frames_per_camera, dtype=int).tolist()
+    return [
+        FrameSample(
+            frame_id=int(frame_id),
+            camera=camera,
+            bboxes=[],
+            source="uniform",
+        )
+        for frame_id in frame_ids
+    ]
 
 
 def bbox_yolo_to_xyxy(
@@ -240,14 +270,31 @@ class PigVideoDataset(Dataset):
 
         return images, mask
 
+    def _build_frame_plan(self, row: dict[str, Any], index: int) -> list[FrameSample]:
+        annotation_path = str(row.get("annotation_path", "")).strip()
+        if annotation_path:
+            annotation = load_annotation(annotation_path)
+            return collect_frame_samples(
+                annotation=annotation,
+                frames_per_camera=self.frames_per_camera,
+                seed=self.seed + index,
+            )
+
+        videos = {camera: row[f"{camera}_video"] for camera in CAMERAS}
+        sampled_frames: list[FrameSample] = []
+        for camera in CAMERAS:
+            sampled_frames.extend(
+                collect_uniform_frame_samples(
+                    video_path=videos[camera],
+                    camera=camera,
+                    frames_per_camera=self.frames_per_camera,
+                )
+            )
+        return sampled_frames
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.rows[index]
-        annotation = load_annotation(row["annotation_path"])
-        sampled_frames = collect_frame_samples(
-            annotation=annotation,
-            frames_per_camera=self.frames_per_camera,
-            seed=self.seed + index,
-        )
+        sampled_frames = self._build_frame_plan(row, index)
         videos = {camera: row[f"{camera}_video"] for camera in CAMERAS}
 
         all_images: list[torch.Tensor] = []
@@ -262,4 +309,5 @@ class PigVideoDataset(Dataset):
             "images": torch.stack(all_images, dim=0),
             "frame_mask": torch.tensor(all_mask, dtype=torch.float32),
             "target": torch.tensor(get_target_vector(row), dtype=torch.float32),
+            "has_target": torch.tensor(int(row.get("has_target", 1)), dtype=torch.int64),
         }
