@@ -1,0 +1,43 @@
+seed: 42
+
+paths:
+  data_root: /placeholder/data
+  train_annotation_dir: /placeholder/data/train/annotation
+  output_dir: /placeholder/project/outputs/server_run_v3
+
+labels:
+  - bad_posture
+  - bumps
+  - soft_pastern
+  - x_shape
+
+cameras:
+  - top
+  - right
+  - left
+  - rear
+
+model:
+  backbone: efficientnet_b0
+  pretrained: true
+  num_classes: 4
+
+data:
+  image_size: 224
+  frames_per_camera: 4
+  use_bbox_crops: true
+  frame_cache_dir: /placeholder/project/outputs/frame_cache
+
+train:
+  valid_size: 0.2
+  batch_size: 8
+  num_workers: 4
+  epochs: 8
+  lr: 0.0002
+
+inference:
+  thresholds:
+    bad_posture: 0.5
+    bumps: 0.5
+    soft_pastern: 0.5
+    x_shape: 0.5
