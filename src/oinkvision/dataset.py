@@ -249,12 +249,4 @@ class PigVideoDataset(Dataset):
             "images": torch.stack(all_images, dim=0),
             "frame_mask": torch.tensor(all_mask, dtype=torch.float32),
             "target": torch.tensor(get_target_vector(row), dtype=torch.float32),
-            "sampled_frames": [
-                {
-                    "frame_id": item.frame_id,
-                    "camera": item.camera,
-                    "bboxes": item.bboxes,
-                }
-                for item in sampled_frames
-            ],
         }
