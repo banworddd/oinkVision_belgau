@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from sklearn.metrics import f1_score
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -116,12 +117,8 @@ def main() -> None:
         class_targets = targets[:, class_idx]
         class_probs = probs[:, class_idx]
         for threshold in threshold_grid:
-            metrics = compute_macro_f1(
-                targets[:, class_idx : class_idx + 1],
-                class_probs[:, None],
-                thresholds=[float(threshold)],
-            )
-            score = float(next(iter(metrics["per_class_f1"].values())))
+            class_preds = (class_probs >= float(threshold)).astype(np.int64)
+            score = float(f1_score(class_targets, class_preds, zero_division=0))
             if score > best_score:
                 best_score = score
                 best_threshold = float(threshold)
