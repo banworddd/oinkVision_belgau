@@ -151,43 +151,53 @@ def maybe_apply_geometry_fusion(
     return fused
 
 
-def maybe_apply_xshape_specialist_fusion(
+def maybe_apply_specialist_fusion(
     rows: list[dict[str, Any]],
     main_probs: np.ndarray,
     aux_probs: np.ndarray | None,
     config: dict[str, Any],
-) -> tuple[np.ndarray, bool]:
+) -> tuple[np.ndarray, set[str]]:
     fused = main_probs.copy()
     infer_cfg = dict(config.get("inference", {}))
-    specialist_cfg = dict(infer_cfg.get("xshape_specialist_fusion", {}))
-    enabled = bool(specialist_cfg.get("enabled", False))
-    xshape_idx = LABELS.index("x_shape")
+    specialist_cfg = dict(infer_cfg.get("specialist_fusion", {}))
+    skip_labels: set[str] = set()
 
-    if enabled:
-        w_main = float(specialist_cfg.get("weight_main", 0.5))
-        w_aux = float(specialist_cfg.get("weight_aux", 0.3))
-        w_geometry = float(specialist_cfg.get("weight_geometry", 0.2))
-        geometry_feature = str(specialist_cfg.get("geometry_feature", "max_xshape_score"))
+    for label, class_cfg in specialist_cfg.items():
+        if label not in LABELS:
+            continue
+        class_cfg = dict(class_cfg or {})
+        if not bool(class_cfg.get("enabled", False)):
+            continue
+        label_idx = LABELS.index(label)
+        use_aux = bool(class_cfg.get("use_aux", False)) and aux_probs is not None and label == "x_shape"
+        w_main = float(class_cfg.get("weight_main", 0.6))
+        w_aux = float(class_cfg.get("weight_aux", 0.0 if not use_aux else 0.2))
+        w_geometry = float(class_cfg.get("weight_geometry", 0.2))
+        geometry_feature = str(class_cfg.get("geometry_feature", ""))
         denom = max(w_main + w_aux + w_geometry, 1e-6)
         for row_idx, row in enumerate(rows):
             annotation_path = str(row.get("annotation_path", "")).strip()
             geometry_score = 0.0
-            if annotation_path:
+            if annotation_path and geometry_feature:
                 geometry = aggregate_annotation_geometry(load_annotation(annotation_path))
                 geometry_score = float(geometry.get(geometry_feature, 0.0))
-            base_main = float(main_probs[row_idx, xshape_idx])
-            base_aux = float(aux_probs[row_idx]) if aux_probs is not None else base_main
-            fused[row_idx, xshape_idx] = (
+            base_main = float(main_probs[row_idx, label_idx])
+            base_aux = float(aux_probs[row_idx]) if use_aux else base_main
+            fused[row_idx, label_idx] = (
                 w_main * base_main + w_aux * base_aux + w_geometry * geometry_score
             ) / denom
-        return fused, True
+        skip_labels.add(label)
 
+    if skip_labels:
+        return fused, skip_labels
+
+    xshape_idx = LABELS.index("x_shape")
     xshape_aux_blend_weight = float(infer_cfg.get("xshape_aux_blend_weight", 0.0))
     if aux_probs is not None and xshape_aux_blend_weight > 0.0:
         fused[:, xshape_idx] = (
             (1.0 - xshape_aux_blend_weight) * fused[:, xshape_idx] + xshape_aux_blend_weight * aux_probs
         )
-    return fused, False
+    return fused, set()
 
 
 @torch.no_grad()
@@ -320,7 +330,7 @@ def main() -> None:
     else:
         thresholds = [float(config["inference"]["thresholds"][label]) for label in LABELS]
 
-    probs, specialist_enabled = maybe_apply_xshape_specialist_fusion(
+    probs, specialist_skip_labels = maybe_apply_specialist_fusion(
         rows=rows,
         main_probs=main_probs,
         aux_probs=aux_probs,
@@ -331,7 +341,7 @@ def main() -> None:
         probs,
         config,
         postprocess_params=postprocess_params,
-        skip_labels={"x_shape"} if specialist_enabled else None,
+        skip_labels=specialist_skip_labels if specialist_skip_labels else None,
     )
     preds = apply_thresholds(probs, thresholds)
     metrics = None

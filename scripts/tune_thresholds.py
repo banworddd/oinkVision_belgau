@@ -14,7 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 import torch
 
-from oinkvision.infer import build_loader, load_config, load_rows_for_index, maybe_apply_geometry_fusion, maybe_apply_xshape_specialist_fusion, predict
+from oinkvision.infer import build_loader, load_config, load_rows_for_index, maybe_apply_geometry_fusion, maybe_apply_specialist_fusion, predict
 from oinkvision.metrics import compute_macro_f1, optimize_thresholds
 from oinkvision.model import build_model
 from oinkvision.train import build_aggregation_spec, choose_device
@@ -53,7 +53,7 @@ def main() -> None:
     if not bool(has_target.all()):
         raise ValueError("Threshold tuning requires targets, but the provided index has unlabeled rows.")
 
-    probs, specialist_enabled = maybe_apply_xshape_specialist_fusion(
+    probs, specialist_skip_labels = maybe_apply_specialist_fusion(
         rows=rows,
         main_probs=main_probs,
         aux_probs=aux_probs,
@@ -63,7 +63,7 @@ def main() -> None:
         rows,
         probs,
         config,
-        skip_labels={"x_shape"} if specialist_enabled else None,
+        skip_labels=specialist_skip_labels if specialist_skip_labels else None,
     )
 
     base_thresholds = [float(config["inference"]["thresholds"][k]) for k in ["bad_posture", "bumps", "soft_pastern", "x_shape"]]

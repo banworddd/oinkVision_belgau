@@ -90,8 +90,42 @@ def choose_device() -> torch.device:
     return torch.device("cpu")
 
 
-def split_rows(rows: list[dict[str, Any]], seed: int, valid_size: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _compute_valid_supports(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {label: int(sum(int(row.get(label, 0)) for row in rows)) for label in LABELS}
+
+
+def _supports_satisfy_constraints(
+    train_rows: list[dict[str, Any]],
+    valid_rows: list[dict[str, Any]],
+    min_valid_support: dict[str, int] | None = None,
+) -> bool:
+    if not min_valid_support:
+        return True
+    valid_supports = _compute_valid_supports(valid_rows)
+    train_supports = _compute_valid_supports(train_rows)
+    for label, min_support in min_valid_support.items():
+        required = int(min_support)
+        if required <= 0:
+            continue
+        # If total support is too small, we cannot enforce this constraint.
+        if valid_supports.get(label, 0) + train_supports.get(label, 0) < required + 1:
+            continue
+        if valid_supports.get(label, 0) < required:
+            return False
+    return True
+
+
+def split_rows(
+    rows: list[dict[str, Any]],
+    seed: int,
+    valid_size: float,
+    min_valid_support: dict[str, int] | None = None,
+    max_attempts: int = 40,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    best_split: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None
+    best_score = -1
     has_groups = all("source_pig_id" in row for row in rows)
+
     if has_groups:
         grouped_rows: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
@@ -99,46 +133,66 @@ def split_rows(rows: list[dict[str, Any]], seed: int, valid_size: float) -> tupl
             grouped_rows.setdefault(group_id, []).append(row)
         group_items = list(grouped_rows.items())
         group_ids = [group_id for group_id, _ in group_items]
-        group_labels = []
-        for _, group in group_items:
-            group_labels.append(
-                f"{group[0]['bad_posture']}{group[0]['bumps']}{group[0]['soft_pastern']}{group[0]['x_shape']}"
-            )
-        try:
-            _, valid_group_ids = train_test_split(
-                group_ids,
-                test_size=valid_size,
-                random_state=seed,
-                stratify=group_labels,
-            )
-        except ValueError:
-            _, valid_group_ids = train_test_split(
-                group_ids,
-                test_size=valid_size,
-                random_state=seed,
-                shuffle=True,
-            )
-        valid_group_set = set(valid_group_ids)
-        train_rows = [row for row in rows if str(row.get("source_pig_id") or row.get("pig_id")) not in valid_group_set]
-        valid_rows = [row for row in rows if str(row.get("source_pig_id") or row.get("pig_id")) in valid_group_set]
-        return train_rows, valid_rows
+        group_labels = [
+            f"{group[0]['bad_posture']}{group[0]['bumps']}{group[0]['soft_pastern']}{group[0]['x_shape']}"
+            for _, group in group_items
+        ]
 
-    stratify_labels = [f"{row['bad_posture']}{row['bumps']}{row['soft_pastern']}{row['x_shape']}" for row in rows]
-    try:
-        train_rows, valid_rows = train_test_split(
-            rows,
-            test_size=valid_size,
-            random_state=seed,
-            stratify=stratify_labels,
-        )
-    except ValueError:
-        train_rows, valid_rows = train_test_split(
-            rows,
-            test_size=valid_size,
-            random_state=seed,
-            shuffle=True,
-        )
-    return train_rows, valid_rows
+        for attempt in range(max_attempts):
+            attempt_seed = seed + attempt
+            try:
+                _, valid_group_ids = train_test_split(
+                    group_ids,
+                    test_size=valid_size,
+                    random_state=attempt_seed,
+                    stratify=group_labels,
+                )
+            except ValueError:
+                _, valid_group_ids = train_test_split(
+                    group_ids,
+                    test_size=valid_size,
+                    random_state=attempt_seed,
+                    shuffle=True,
+                )
+            valid_group_set = set(valid_group_ids)
+            train_rows = [row for row in rows if str(row.get("source_pig_id") or row.get("pig_id")) not in valid_group_set]
+            valid_rows = [row for row in rows if str(row.get("source_pig_id") or row.get("pig_id")) in valid_group_set]
+            valid_supports = _compute_valid_supports(valid_rows)
+            score = sum(1 for label, support in valid_supports.items() if support > 0)
+            if score > best_score:
+                best_score = score
+                best_split = (train_rows, valid_rows)
+            if _supports_satisfy_constraints(train_rows, valid_rows, min_valid_support=min_valid_support):
+                return train_rows, valid_rows
+    else:
+        stratify_labels = [f"{row['bad_posture']}{row['bumps']}{row['soft_pastern']}{row['x_shape']}" for row in rows]
+        for attempt in range(max_attempts):
+            attempt_seed = seed + attempt
+            try:
+                train_rows, valid_rows = train_test_split(
+                    rows,
+                    test_size=valid_size,
+                    random_state=attempt_seed,
+                    stratify=stratify_labels,
+                )
+            except ValueError:
+                train_rows, valid_rows = train_test_split(
+                    rows,
+                    test_size=valid_size,
+                    random_state=attempt_seed,
+                    shuffle=True,
+                )
+            valid_supports = _compute_valid_supports(valid_rows)
+            score = sum(1 for label, support in valid_supports.items() if support > 0)
+            if score > best_score:
+                best_score = score
+                best_split = (train_rows, valid_rows)
+            if _supports_satisfy_constraints(train_rows, valid_rows, min_valid_support=min_valid_support):
+                return train_rows, valid_rows
+
+    if best_split is not None:
+        return best_split
+    raise ValueError("Failed to construct train/valid split.")
 
 
 def build_dataloaders_from_rows(
@@ -223,7 +277,13 @@ def build_dataloaders(
         return build_dataloaders_from_rows(config, train_rows, valid_rows, train_index_path)
 
     rows = load_index(index_path)
-    train_rows, valid_rows = split_rows(rows, seed=config["seed"], valid_size=config["train"]["valid_size"])
+    train_rows, valid_rows = split_rows(
+        rows,
+        seed=config["seed"],
+        valid_size=config["train"]["valid_size"],
+        min_valid_support=config["train"].get("split_min_valid_support"),
+        max_attempts=int(config["train"].get("split_retry_attempts", 40)),
+    )
     return build_dataloaders_from_rows(config, train_rows, valid_rows, index_path)
 
 

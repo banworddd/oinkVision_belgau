@@ -73,6 +73,10 @@ train:
     enabled: true
     target_xshape_count: 12
     max_copies_per_row: 24
+  split_retry_attempts: 80
+  split_min_valid_support:
+    bad_posture: 1
+    soft_pastern: 1
   xshape_aux_weight: 0.35
   loss:
     type: asl
@@ -82,12 +86,21 @@ train:
 
 inference:
   xshape_aux_blend_weight: 0.35
-  xshape_specialist_fusion:
-    enabled: true
-    weight_main: 0.45
-    weight_aux: 0.35
-    weight_geometry: 0.20
-    geometry_feature: max_xshape_score
+  specialist_fusion:
+    x_shape:
+      enabled: true
+      use_aux: true
+      weight_main: 0.45
+      weight_aux: 0.35
+      weight_geometry: 0.20
+      geometry_feature: max_xshape_score
+    soft_pastern:
+      enabled: true
+      use_aux: false
+      weight_main: 0.70
+      weight_aux: 0.0
+      weight_geometry: 0.30
+      geometry_feature: max_soft_pastern_score
   threshold_fallbacks:
     min_support: 1
     thresholds:

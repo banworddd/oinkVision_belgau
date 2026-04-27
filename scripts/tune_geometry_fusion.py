@@ -18,7 +18,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from oinkvision.constants import LABELS
 from oinkvision.geometry import aggregate_annotation_geometry
-from oinkvision.infer import build_loader, load_config, load_rows_for_index, maybe_apply_xshape_specialist_fusion, predict
+from oinkvision.infer import build_loader, load_config, load_rows_for_index, maybe_apply_specialist_fusion, predict
 from oinkvision.metrics import compute_macro_f1
 from oinkvision.model import build_model
 from oinkvision.train import build_aggregation_spec, choose_device
@@ -104,7 +104,7 @@ def main() -> None:
     )
     if not bool(has_target.all()):
         raise ValueError("Geometry fusion tuning requires labeled rows with annotation paths.")
-    probs, _ = maybe_apply_xshape_specialist_fusion(
+    probs, _ = maybe_apply_specialist_fusion(
         rows=rows,
         main_probs=main_probs,
         aux_probs=aux_probs,

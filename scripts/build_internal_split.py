@@ -57,6 +57,8 @@ def main() -> None:
         rows,
         seed=int(config["seed"]),
         valid_size=float(config["train"]["valid_size"]),
+        min_valid_support=config["train"].get("split_min_valid_support"),
+        max_attempts=int(config["train"].get("split_retry_attempts", 40)),
     )
 
     train_path = args.output_dir / "train_split.csv"
