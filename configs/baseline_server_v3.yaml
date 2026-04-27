@@ -28,7 +28,7 @@ front_metadata:
   dim: 8
   hidden_dim: 16
   dropout: 0.1
-  weight: 0.15
+  weight: 0.05
 
 data:
   image_size: 224
