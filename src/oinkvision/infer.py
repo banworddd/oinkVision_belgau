@@ -213,10 +213,14 @@ def predict(
     all_main_probs = []
     all_aux_probs = []
     all_has_target = []
+    front_meta_weight = float(aggregation_spec.get("front_meta_weight", 0.0)) if aggregation_spec is not None else 0.0
 
     for batch in tqdm(loader, leave=False):
         images = batch["images"].to(device)
         frame_mask = batch["frame_mask"].to(device)
+        front_meta = batch.get("front_meta")
+        if front_meta is not None:
+            front_meta = front_meta.to(device)
         targets = batch["target"].cpu().numpy()
         has_target = batch["has_target"].cpu().numpy()
 
@@ -232,6 +236,10 @@ def predict(
             frame_logits = model_output.view(batch_size, num_frames, len(LABELS))
             frame_xshape_aux_logits = None
         logits = aggregate_frame_logits(frame_logits, frame_mask, aggregation_spec=aggregation_spec)
+        if front_meta is not None and front_meta_weight > 0.0 and hasattr(model, "forward_meta"):
+            meta_logits = model.forward_meta(front_meta)  # type: ignore[attr-defined]
+            if meta_logits is not None:
+                logits = logits + front_meta_weight * meta_logits
         main_probs = torch.sigmoid(logits).cpu().numpy()
         if frame_xshape_aux_logits is not None:
             aux_logits = aggregate_rear_xshape_aux_logits(

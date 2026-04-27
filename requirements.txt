@@ -1,6 +1,8 @@
 numpy
 pillow
 opencv-python
+pandas
+openpyxl
 pyyaml
 scikit-learn
 timm

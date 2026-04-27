@@ -439,7 +439,8 @@
 ### Индекс
 
 ```bash
-python scripts/build_index.py
+python scripts/build_index.py \
+  --metadata-path data/train/metadata/meta_data.xlsx
 ```
 
 ### Internal split

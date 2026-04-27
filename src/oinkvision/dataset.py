@@ -17,6 +17,17 @@ from torchvision import transforms
 
 from .constants import CAMERAS, LABELS
 
+FRONT_META_FIELDS = [
+    "front_left_bad_posture",
+    "front_right_bad_posture",
+    "front_left_bumps",
+    "front_right_bumps",
+    "front_left_soft_pastern",
+    "front_right_soft_pastern",
+    "front_left_x_shape",
+    "front_right_x_shape",
+]
+
 
 @dataclass
 class FrameSample:
@@ -43,6 +54,7 @@ def load_index(index_path: str | Path) -> list[dict[str, Any]]:
         "annotated_right_frames",
         "annotated_left_frames",
         "annotated_rear_frames",
+        *FRONT_META_FIELDS,
     ]
     for row in rows:
         for field in int_fields:
@@ -67,6 +79,10 @@ def build_cache_frame_path(
 
 def get_target_vector(row: dict[str, Any]) -> list[int]:
     return [int(row.get(label, 0)) for label in LABELS]
+
+
+def get_front_meta_vector(row: dict[str, Any]) -> list[float]:
+    return [float(int(row.get(field, 0))) for field in FRONT_META_FIELDS]
 
 
 def collect_frame_samples(
@@ -475,5 +491,6 @@ class PigVideoDataset(Dataset):
             "images": torch.stack(all_images, dim=0),
             "frame_mask": torch.tensor(all_mask, dtype=torch.float32),
             "target": torch.tensor(get_target_vector(row), dtype=torch.float32),
+            "front_meta": torch.tensor(get_front_meta_vector(row), dtype=torch.float32),
             "has_target": torch.tensor(int(row.get("has_target", 1)), dtype=torch.int64),
         }

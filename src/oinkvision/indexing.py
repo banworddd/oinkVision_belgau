@@ -8,7 +8,20 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from .constants import CAMERAS, LABELS
+
+FRONT_META_FIELDS = [
+    "front_left_bad_posture",
+    "front_right_bad_posture",
+    "front_left_bumps",
+    "front_right_bumps",
+    "front_left_soft_pastern",
+    "front_right_soft_pastern",
+    "front_left_x_shape",
+    "front_right_x_shape",
+]
 
 
 @dataclass
@@ -29,6 +42,14 @@ class PigRecord:
     annotated_left_frames: int
     annotated_rear_frames: int
     annotation_path: str
+    front_left_bad_posture: int
+    front_right_bad_posture: int
+    front_left_bumps: int
+    front_right_bumps: int
+    front_left_soft_pastern: int
+    front_right_soft_pastern: int
+    front_left_x_shape: int
+    front_right_x_shape: int
 
 
 def load_annotation(annotation_path: str | Path) -> dict[str, Any]:
@@ -44,7 +65,37 @@ def _count_camera_annotations(annotations: list[dict[str, Any]], camera: str) ->
 VIDEO_NAME_RE = re.compile(r"^pig_(?P<pig_id>.+?)_cam_(?P<camera>top|right|left|rear)\.mp4$")
 
 
-def build_record(annotation_path: str | Path, data_root: str | Path) -> PigRecord:
+def _normalize_pig_key(value: str | int) -> str:
+    text = str(value).strip()
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return str(int(digits)) if digits else text.lower()
+
+
+def load_front_metadata(metadata_path: str | Path | None) -> dict[str, dict[str, int]]:
+    if metadata_path is None:
+        return {}
+    metadata_path = Path(metadata_path)
+    if not metadata_path.exists():
+        return {}
+
+    table = pd.read_excel(metadata_path)
+    required_columns = ["ID", *FRONT_META_FIELDS]
+    missing = [name for name in required_columns if name not in table.columns]
+    if missing:
+        raise ValueError(f"Missing required metadata columns in {metadata_path}: {missing}")
+
+    metadata_by_pig: dict[str, dict[str, int]] = {}
+    for _, row in table.iterrows():
+        pig_key = _normalize_pig_key(row["ID"])
+        metadata_by_pig[pig_key] = {field: int(bool(row[field])) for field in FRONT_META_FIELDS}
+    return metadata_by_pig
+
+
+def build_record(
+    annotation_path: str | Path,
+    data_root: str | Path,
+    metadata_by_pig: dict[str, dict[str, int]] | None = None,
+) -> PigRecord:
     annotation_path = Path(annotation_path)
     data_root = Path(data_root)
     data = load_annotation(annotation_path)
@@ -52,6 +103,9 @@ def build_record(annotation_path: str | Path, data_root: str | Path) -> PigRecor
     video = data["video"]
     target = data["target"]
     annotations = data.get("annotations", [])
+
+    metadata_by_pig = metadata_by_pig or {}
+    front_meta = metadata_by_pig.get(_normalize_pig_key(data["pig_id"]), {})
 
     return PigRecord(
         pig_id=str(data["pig_id"]),
@@ -70,6 +124,14 @@ def build_record(annotation_path: str | Path, data_root: str | Path) -> PigRecor
         annotated_left_frames=_count_camera_annotations(annotations, "left"),
         annotated_rear_frames=_count_camera_annotations(annotations, "rear"),
         annotation_path=str(annotation_path),
+        front_left_bad_posture=int(front_meta.get("front_left_bad_posture", 0)),
+        front_right_bad_posture=int(front_meta.get("front_right_bad_posture", 0)),
+        front_left_bumps=int(front_meta.get("front_left_bumps", 0)),
+        front_right_bumps=int(front_meta.get("front_right_bumps", 0)),
+        front_left_soft_pastern=int(front_meta.get("front_left_soft_pastern", 0)),
+        front_right_soft_pastern=int(front_meta.get("front_right_soft_pastern", 0)),
+        front_left_x_shape=int(front_meta.get("front_left_x_shape", 0)),
+        front_right_x_shape=int(front_meta.get("front_right_x_shape", 0)),
     )
 
 
@@ -93,18 +155,29 @@ def validate_record(record: PigRecord) -> list[str]:
     return errors
 
 
-def build_records(annotation_dir: str | Path, data_root: str | Path) -> list[PigRecord]:
+def build_records(
+    annotation_dir: str | Path,
+    data_root: str | Path,
+    metadata_path: str | Path | None = None,
+) -> list[PigRecord]:
     annotation_dir = Path(annotation_dir)
     paths = sorted(annotation_dir.glob("pig_*.json"))
-    records = [build_record(path, data_root) for path in paths]
+    metadata_by_pig = load_front_metadata(metadata_path)
+    records = [build_record(path, data_root, metadata_by_pig=metadata_by_pig) for path in paths]
     return records
 
 
-def build_record_from_raw_group(pig_id: str, grouped_paths: dict[str, Path]) -> PigRecord:
+def build_record_from_raw_group(
+    pig_id: str,
+    grouped_paths: dict[str, Path],
+    metadata_by_pig: dict[str, dict[str, int]] | None = None,
+) -> PigRecord:
     missing = [camera for camera in CAMERAS if camera not in grouped_paths]
     if missing:
         raise ValueError(f"{pig_id}: missing camera videos: {missing}")
 
+    metadata_by_pig = metadata_by_pig or {}
+    front_meta = metadata_by_pig.get(_normalize_pig_key(pig_id), {})
     return PigRecord(
         pig_id=str(pig_id),
         top_video=str(grouped_paths["top"]),
@@ -122,10 +195,18 @@ def build_record_from_raw_group(pig_id: str, grouped_paths: dict[str, Path]) -> 
         annotated_left_frames=0,
         annotated_rear_frames=0,
         annotation_path="",
+        front_left_bad_posture=int(front_meta.get("front_left_bad_posture", 0)),
+        front_right_bad_posture=int(front_meta.get("front_right_bad_posture", 0)),
+        front_left_bumps=int(front_meta.get("front_left_bumps", 0)),
+        front_right_bumps=int(front_meta.get("front_right_bumps", 0)),
+        front_left_soft_pastern=int(front_meta.get("front_left_soft_pastern", 0)),
+        front_right_soft_pastern=int(front_meta.get("front_right_soft_pastern", 0)),
+        front_left_x_shape=int(front_meta.get("front_left_x_shape", 0)),
+        front_right_x_shape=int(front_meta.get("front_right_x_shape", 0)),
     )
 
 
-def build_records_from_raw_dir(raw_dir: str | Path) -> list[PigRecord]:
+def build_records_from_raw_dir(raw_dir: str | Path, metadata_path: str | Path | None = None) -> list[PigRecord]:
     raw_dir = Path(raw_dir)
     grouped: dict[str, dict[str, Path]] = {}
     for path in sorted(raw_dir.glob("pig_*_cam_*.mp4")):
@@ -136,7 +217,11 @@ def build_records_from_raw_dir(raw_dir: str | Path) -> list[PigRecord]:
         camera = match.group("camera")
         grouped.setdefault(pig_id, {})[camera] = path
 
-    records = [build_record_from_raw_group(pig_id, grouped_paths) for pig_id, grouped_paths in sorted(grouped.items())]
+    metadata_by_pig = load_front_metadata(metadata_path)
+    records = [
+        build_record_from_raw_group(pig_id, grouped_paths, metadata_by_pig=metadata_by_pig)
+        for pig_id, grouped_paths in sorted(grouped.items())
+    ]
     return records
 
 

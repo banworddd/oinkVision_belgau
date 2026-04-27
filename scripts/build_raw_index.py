@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", type=str, choices=["val", "test"], required=True)
     parser.add_argument("--raw-dir", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=output_root / "index")
+    parser.add_argument("--metadata-path", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -47,7 +48,7 @@ def main() -> None:
     raw_dir = args.raw_dir if args.raw_dir is not None else get_data_root() / args.split / "raw"
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    records = build_records_from_raw_dir(raw_dir)
+    records = build_records_from_raw_dir(raw_dir, metadata_path=args.metadata_path)
     rows = records_to_rows(records)
 
     errors: list[str] = []

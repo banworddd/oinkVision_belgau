@@ -37,6 +37,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=output_root / "index",
     )
+    parser.add_argument(
+        "--metadata-path",
+        type=Path,
+        default=data_root / "train" / "metadata" / "meta_data.xlsx",
+    )
     return parser.parse_args()
 
 
@@ -59,7 +64,7 @@ def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    records = build_records(args.annotation_dir, args.data_root)
+    records = build_records(args.annotation_dir, args.data_root, metadata_path=args.metadata_path)
     rows = records_to_rows(records)
 
     errors: list[str] = []

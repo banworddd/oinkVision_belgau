@@ -23,9 +23,16 @@ model:
   num_classes: 4
   use_xshape_aux_head: true
 
+front_metadata:
+  enabled: true
+  dim: 8
+  hidden_dim: 16
+  dropout: 0.1
+  weight: 0.15
+
 data:
   image_size: 224
-  frames_per_camera: 4
+  frames_per_camera: 6
   use_bbox_crops: true
   frame_cache_dir: frame_cache
 
@@ -67,8 +74,8 @@ train:
   sampler_class_boosts:
     bad_posture: 1.2
     bumps: 1.0
-    soft_pastern: 1.8
-    x_shape: 3.0
+    soft_pastern: 2.2
+    x_shape: 4.5
   xshape_index_augmentation:
     enabled: true
     target_xshape_count: 12
@@ -77,7 +84,7 @@ train:
   split_min_valid_support:
     bad_posture: 1
     soft_pastern: 1
-  xshape_aux_weight: 0.35
+  xshape_aux_weight: 0.55
   loss:
     type: asl
     gamma_pos: 0.0
@@ -90,24 +97,24 @@ inference:
     x_shape:
       enabled: true
       use_aux: true
-      weight_main: 0.45
-      weight_aux: 0.35
-      weight_geometry: 0.20
+      weight_main: 0.35
+      weight_aux: 0.25
+      weight_geometry: 0.40
       geometry_feature: max_xshape_score
     soft_pastern:
       enabled: true
       use_aux: false
-      weight_main: 0.70
+      weight_main: 0.60
       weight_aux: 0.0
-      weight_geometry: 0.30
+      weight_geometry: 0.40
       geometry_feature: max_soft_pastern_score
   threshold_fallbacks:
     min_support: 1
     thresholds:
       bad_posture: 0.35
       bumps: 0.10
-      soft_pastern: 0.30
-      x_shape: 0.30
+      soft_pastern: 0.35
+      x_shape: 0.40
   thresholds:
     bad_posture: 0.5
     bumps: 0.5
