@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import cv2
+from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -44,10 +45,9 @@ def main() -> None:
     if args.limit is not None:
         rows = rows[: args.limit]
 
-    saved = 0
+    work_items: list[tuple[dict, str, int]] = []
     for row in rows:
         annotation = load_annotation(row["annotation_path"])
-        videos = {camera: row[f"{camera}_video"] for camera in CAMERAS}
         per_camera_frames = {camera: set() for camera in CAMERAS}
         for frame in annotation.get("annotations", []):
             frame_id = int(frame["frame_id"])
@@ -57,15 +57,28 @@ def main() -> None:
 
         for camera, frame_ids in per_camera_frames.items():
             for frame_id in sorted(frame_ids):
-                cache_path = build_cache_frame_path(args.output_dir, row["pig_id"], camera, frame_id)
-                if cache_path.exists():
-                    continue
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                frame = read_frame(videos[camera], frame_id)
-                cv2.imwrite(str(cache_path), frame)
-                saved += 1
+                work_items.append((row, camera, frame_id))
+
+    total_items = len(work_items)
+    saved = 0
+    skipped = 0
+    progress = tqdm(work_items, total=total_items, desc="Preextract frames", unit="frame")
+    for row, camera, frame_id in progress:
+        cache_path = build_cache_frame_path(args.output_dir, row["pig_id"], camera, frame_id)
+        if cache_path.exists():
+            skipped += 1
+            progress.set_postfix(saved=saved, skipped=skipped)
+            continue
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        frame = read_frame(row[f"{camera}_video"], frame_id)
+        cv2.imwrite(str(cache_path), frame)
+        saved += 1
+        progress.set_postfix(saved=saved, skipped=skipped)
 
     print(f"Saved {saved} cached frames to {args.output_dir}")
+    print(f"Skipped {skipped} already cached frames")
+    print(f"Total frame tasks: {total_items}")
 
 
 if __name__ == "__main__":
