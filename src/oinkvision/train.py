@@ -14,7 +14,7 @@ import torch
 import yaml
 from sklearn.model_selection import train_test_split
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -113,13 +113,44 @@ def build_dataloaders_from_rows(
         "frame_cache_dir": config["data"].get("frame_cache_dir"),
         "seed": config["seed"],
     }
-    train_dataset = PigVideoDataset(rows=train_rows, **common_kwargs)
-    valid_dataset = PigVideoDataset(rows=valid_rows, **common_kwargs)
+    train_dataset = PigVideoDataset(
+        rows=train_rows,
+        augment=bool(config["train"].get("train_augmentations", False)),
+        **common_kwargs,
+    )
+    valid_dataset = PigVideoDataset(
+        rows=valid_rows,
+        augment=False,
+        **common_kwargs,
+    )
+
+    sampler = None
+    if bool(config["train"].get("use_weighted_sampler", False)):
+        sampler_power = float(config["train"].get("sampler_power", 1.0))
+        sampler_max_weight = float(config["train"].get("sampler_max_weight", 10.0))
+        label_counts = {
+            label: max(sum(int(row[label]) for row in train_rows), 1)
+            for label in LABELS
+        }
+        class_weights = {
+            label: min((len(train_rows) / count) ** sampler_power, sampler_max_weight)
+            for label, count in label_counts.items()
+        }
+        sample_weights = []
+        for row in train_rows:
+            positive_weights = [class_weights[label] for label in LABELS if int(row[label]) == 1]
+            sample_weights.append(max(positive_weights) if positive_weights else 1.0)
+        sampler = WeightedRandomSampler(
+            weights=torch.tensor(sample_weights, dtype=torch.double),
+            num_samples=len(sample_weights),
+            replacement=True,
+        )
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=config["train"]["batch_size"],
-        shuffle=True,
+        shuffle=sampler is None,
+        sampler=sampler,
         num_workers=config["train"]["num_workers"],
     )
     valid_loader = DataLoader(

@@ -134,6 +134,7 @@ class PigVideoDataset(Dataset):
         image_size: int = 224,
         use_bbox_crops: bool = True,
         frame_cache_dir: str | Path | None = None,
+        augment: bool = False,
         rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self.rows = rows if rows is not None else load_index(index_path)
@@ -142,16 +143,28 @@ class PigVideoDataset(Dataset):
         self.image_size = image_size
         self.use_bbox_crops = use_bbox_crops
         self.frame_cache_dir = Path(frame_cache_dir) if frame_cache_dir else None
-        self.transform = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Resize((image_size, image_size), antialias=True),
-                transforms.Normalize(
-                    mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225),
-                ),
-            ]
+        self.augment = augment
+        base_transforms: list[Any] = [
+            transforms.ToTensor(),
+            transforms.Resize((image_size, image_size), antialias=True),
+        ]
+        if augment:
+            base_transforms.extend(
+                [
+                    transforms.ColorJitter(brightness=0.12, contrast=0.12, saturation=0.08),
+                    transforms.RandomApply(
+                        [transforms.RandomAffine(degrees=4, translate=(0.04, 0.04), scale=(0.96, 1.04))],
+                        p=0.5,
+                    ),
+                ]
+            )
+        base_transforms.append(
+            transforms.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            )
         )
+        self.transform = transforms.Compose(base_transforms)
 
     def __len__(self) -> int:
         return len(self.rows)
