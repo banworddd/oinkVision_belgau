@@ -166,6 +166,7 @@ class PigVideoDataset(Dataset):
         frame_cache_dir: str | Path | None = None,
         augment: bool = False,
         raw_sample_ratio: float = 0.0,
+        augmentation_profile: dict[str, Any] | None = None,
         rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self.rows = rows if rows is not None else load_index(index_path)
@@ -176,6 +177,11 @@ class PigVideoDataset(Dataset):
         self.frame_cache_dir = Path(frame_cache_dir) if frame_cache_dir else None
         self.augment = augment
         self.raw_sample_ratio = float(np.clip(raw_sample_ratio, 0.0, 1.0))
+        self.augmentation_profile = dict(augmentation_profile or {})
+        self.base_crop_jitter = float(self.augmentation_profile.get("bbox_crop_jitter", 0.0))
+        self.rear_extra_crop_jitter = float(self.augmentation_profile.get("rear_bbox_crop_jitter", 0.0))
+        self.xshape_extra_crop_jitter = float(self.augmentation_profile.get("xshape_bbox_crop_jitter", 0.0))
+
         base_transforms: list[Any] = [
             transforms.ToTensor(),
             transforms.Resize((image_size, image_size), antialias=True),
@@ -183,9 +189,25 @@ class PigVideoDataset(Dataset):
         if augment:
             base_transforms.extend(
                 [
-                    transforms.ColorJitter(brightness=0.12, contrast=0.12, saturation=0.08),
+                    transforms.ColorJitter(
+                        brightness=float(self.augmentation_profile.get("brightness", 0.12)),
+                        contrast=float(self.augmentation_profile.get("contrast", 0.12)),
+                        saturation=float(self.augmentation_profile.get("saturation", 0.08)),
+                    ),
                     transforms.RandomApply(
-                        [transforms.RandomAffine(degrees=4, translate=(0.04, 0.04), scale=(0.96, 1.04))],
+                        [
+                            transforms.RandomAffine(
+                                degrees=float(self.augmentation_profile.get("degrees", 4.0)),
+                                translate=(
+                                    float(self.augmentation_profile.get("translate", 0.04)),
+                                    float(self.augmentation_profile.get("translate", 0.04)),
+                                ),
+                                scale=(
+                                    float(self.augmentation_profile.get("scale_min", 0.96)),
+                                    float(self.augmentation_profile.get("scale_max", 1.04)),
+                                ),
+                            )
+                        ],
                         p=0.5,
                     ),
                 ]
@@ -249,7 +271,14 @@ class PigVideoDataset(Dataset):
                     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return self._read_video_frame(video_path, frame_id)
 
-    def _crop_frame(self, frame: np.ndarray, bboxes: list[dict[str, Any]]) -> np.ndarray:
+    def _crop_frame(
+        self,
+        frame: np.ndarray,
+        bboxes: list[dict[str, Any]],
+        camera: str,
+        row: dict[str, Any],
+        index: int,
+    ) -> np.ndarray:
         if not self.use_bbox_crops or not bboxes:
             return frame
 
@@ -261,12 +290,33 @@ class PigVideoDataset(Dataset):
         x2 = max(box[2] for box in xyxy_boxes)
         y2 = max(box[3] for box in xyxy_boxes)
 
-        pad_x = max(int(0.08 * (x2 - x1)), 4)
-        pad_y = max(int(0.08 * (y2 - y1)), 4)
+        pad_ratio = 0.08
+        if self.augment:
+            pad_ratio += self.base_crop_jitter
+            if camera == "rear":
+                pad_ratio += self.rear_extra_crop_jitter
+            if int(row.get("x_shape", 0)) == 1 and camera == "rear":
+                pad_ratio += self.xshape_extra_crop_jitter
+
+        pad_x = max(int(pad_ratio * (x2 - x1)), 4)
+        pad_y = max(int(pad_ratio * (y2 - y1)), 4)
+
+        if self.augment and pad_ratio > 0.08:
+            rng = random.Random(self.seed + index + int(sum(box[0] for box in xyxy_boxes)))
+            jitter_x = int(rng.uniform(-pad_x * 0.35, pad_x * 0.35))
+            jitter_y = int(rng.uniform(-pad_y * 0.35, pad_y * 0.35))
+        else:
+            jitter_x = 0
+            jitter_y = 0
+
         x1 = max(x1 - pad_x, 0)
         y1 = max(y1 - pad_y, 0)
         x2 = min(x2 + pad_x, width)
         y2 = min(y2 + pad_y, height)
+        x1 = max(x1 + jitter_x, 0)
+        x2 = min(x2 + jitter_x, width)
+        y1 = max(y1 + jitter_y, 0)
+        y2 = min(y2 + jitter_y, height)
 
         if x2 <= x1 or y2 <= y1:
             return frame
@@ -281,6 +331,8 @@ class PigVideoDataset(Dataset):
         video_path: str,
         sampled_frames: list[FrameSample],
         camera: str,
+        row: dict[str, Any],
+        index: int,
     ) -> tuple[list[torch.Tensor], list[int]]:
         camera_items = [item for item in sampled_frames if item.camera == camera]
         images: list[torch.Tensor] = []
@@ -288,7 +340,7 @@ class PigVideoDataset(Dataset):
 
         for item in camera_items[: self.frames_per_camera]:
             frame = self._read_frame(pig_id, video_path, camera, item.frame_id)
-            frame = self._crop_frame(frame, item.bboxes)
+            frame = self._crop_frame(frame, item.bboxes, camera=camera, row=row, index=index)
             tensor = self.transform(frame)
             images.append(tensor)
             mask.append(1)
@@ -330,7 +382,14 @@ class PigVideoDataset(Dataset):
         all_images: list[torch.Tensor] = []
         all_mask: list[int] = []
         for camera in CAMERAS:
-            camera_images, camera_mask = self._sample_camera_frames(row["pig_id"], videos[camera], sampled_frames, camera)
+            camera_images, camera_mask = self._sample_camera_frames(
+                row["pig_id"],
+                videos[camera],
+                sampled_frames,
+                camera,
+                row=row,
+                index=index,
+            )
             all_images.extend(camera_images)
             all_mask.extend(camera_mask)
 

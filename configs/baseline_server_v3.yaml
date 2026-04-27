@@ -28,6 +28,18 @@ data:
   use_bbox_crops: true
   frame_cache_dir: frame_cache
 
+augmentation:
+  brightness: 0.12
+  contrast: 0.12
+  saturation: 0.08
+  degrees: 4.0
+  translate: 0.04
+  scale_min: 0.96
+  scale_max: 1.04
+  bbox_crop_jitter: 0.03
+  rear_bbox_crop_jitter: 0.03
+  xshape_bbox_crop_jitter: 0.04
+
 train:
   valid_size: 0.2
   batch_size: 8
@@ -39,6 +51,11 @@ train:
   use_weighted_sampler: true
   sampler_power: 0.7
   sampler_max_weight: 8.0
+  sampler_class_boosts:
+    bad_posture: 1.2
+    bumps: 1.0
+    soft_pastern: 1.8
+    x_shape: 3.0
   loss:
     type: asl
     gamma_pos: 0.0

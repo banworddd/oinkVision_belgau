@@ -92,6 +92,7 @@ def build_loader(config: dict[str, Any], index_path: Path, limit: int | None) ->
         image_size=config["data"]["image_size"],
         use_bbox_crops=config["data"]["use_bbox_crops"],
         frame_cache_dir=config["data"].get("frame_cache_dir"),
+        augmentation_profile=config.get("augmentation", {}),
         seed=config["seed"],
     )
     return DataLoader(

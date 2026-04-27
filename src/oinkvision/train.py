@@ -121,6 +121,7 @@ def build_dataloaders_from_rows(
         "image_size": config["data"]["image_size"],
         "use_bbox_crops": config["data"]["use_bbox_crops"],
         "frame_cache_dir": config["data"].get("frame_cache_dir"),
+        "augmentation_profile": config.get("augmentation", {}),
         "seed": config["seed"],
     }
     train_dataset = PigVideoDataset(
@@ -140,12 +141,16 @@ def build_dataloaders_from_rows(
     if bool(config["train"].get("use_weighted_sampler", False)):
         sampler_power = float(config["train"].get("sampler_power", 1.0))
         sampler_max_weight = float(config["train"].get("sampler_max_weight", 10.0))
+        class_weight_boosts = {
+            label: float(config["train"].get("sampler_class_boosts", {}).get(label, 1.0))
+            for label in LABELS
+        }
         label_counts = {
             label: max(sum(int(row[label]) for row in train_rows), 1)
             for label in LABELS
         }
         class_weights = {
-            label: min((len(train_rows) / count) ** sampler_power, sampler_max_weight)
+            label: min((len(train_rows) / count) ** sampler_power, sampler_max_weight) * class_weight_boosts[label]
             for label, count in label_counts.items()
         }
         sample_weights = []
