@@ -120,7 +120,7 @@
    - `left/right`: задняя нога
    - `rear`: две задние ноги
 4. Каждый кадр кодируется CNN:
-   - `EfficientNetV2-S`
+   - `tf_efficientnetv2_s.in21k_ft_in1k`
    - `ImageNet pretrained`
 5. Для каждого кадра получаем `4 logits`.
 6. Затем идёт агрегация:
