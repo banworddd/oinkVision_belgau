@@ -203,12 +203,39 @@ class PigVideoDataset(Dataset):
 
     def _read_video_frame(self, video_path: str, frame_id: int) -> np.ndarray:
         capture = cv2.VideoCapture(video_path)
-        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
-        ok, frame = capture.read()
+        if not capture.isOpened():
+            capture.release()
+            raise RuntimeError(f"Failed to open video: {video_path}")
+
+        total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames > 0:
+            target_frame = int(np.clip(frame_id, 0, total_frames - 1))
+        else:
+            target_frame = max(int(frame_id), 0)
+
+        # Some videos are shorter than annotated frame ids or seek imprecisely.
+        # Try the requested frame first, then fall back to several nearby earlier frames.
+        candidate_frames = [target_frame]
+        for delta in (1, 2, 3, 5, 8, 13, 21):
+            fallback_frame = max(target_frame - delta, 0)
+            if fallback_frame not in candidate_frames:
+                candidate_frames.append(fallback_frame)
+
+        frame = None
+        for candidate in candidate_frames:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, candidate)
+            ok, candidate_frame = capture.read()
+            if ok and candidate_frame is not None:
+                frame = candidate_frame
+                break
+
         capture.release()
 
-        if not ok or frame is None:
-            raise RuntimeError(f"Failed to read frame {frame_id} from {video_path}")
+        if frame is None:
+            raise RuntimeError(
+                f"Failed to read frame {frame_id} from {video_path} "
+                f"(clamped target={target_frame}, total_frames={total_frames})"
+            )
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return frame
