@@ -318,7 +318,14 @@ def main() -> None:
 
     model = build_model(config).to(device)
     state_dict = torch.load(args.checkpoint, map_location=device)
-    model.load_state_dict(state_dict)
+    load_result = model.load_state_dict(state_dict, strict=False)
+    print(
+        {
+            "checkpoint": str(args.checkpoint),
+            "missing_keys": list(load_result.missing_keys),
+            "unexpected_keys": list(load_result.unexpected_keys),
+        }
+    )
 
     rows = load_rows_for_index(args.index_path, args.limit)
     loader = build_loader(config, args.index_path, args.limit)
