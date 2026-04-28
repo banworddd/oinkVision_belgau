@@ -174,17 +174,19 @@ def maybe_apply_specialist_fusion(
         w_aux = float(class_cfg.get("weight_aux", 0.0 if not use_aux else 0.2))
         w_geometry = float(class_cfg.get("weight_geometry", 0.2))
         geometry_feature = str(class_cfg.get("geometry_feature", ""))
-        denom = max(w_main + w_aux + w_geometry, 1e-6)
         for row_idx, row in enumerate(rows):
             annotation_path = str(row.get("annotation_path", "")).strip()
             geometry_score = 0.0
+            effective_w_geometry = 0.0
             if annotation_path and geometry_feature:
                 geometry = aggregate_annotation_geometry(load_annotation(annotation_path))
                 geometry_score = float(geometry.get(geometry_feature, 0.0))
+                effective_w_geometry = w_geometry
             base_main = float(main_probs[row_idx, label_idx])
             base_aux = float(aux_probs[row_idx]) if use_aux else base_main
+            denom = max(w_main + w_aux + effective_w_geometry, 1e-6)
             fused[row_idx, label_idx] = (
-                w_main * base_main + w_aux * base_aux + w_geometry * geometry_score
+                w_main * base_main + w_aux * base_aux + effective_w_geometry * geometry_score
             ) / denom
         skip_labels.add(label)
 
