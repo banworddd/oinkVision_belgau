@@ -90,7 +90,6 @@ def collect_frame_samples(
     frames_per_camera: int,
     seed: int | None = None,
 ) -> list[FrameSample]:
-    rng = random.Random(seed)
     per_camera: dict[str, list[FrameSample]] = {camera: [] for camera in CAMERAS}
 
     for frame in annotation.get("annotations", []):
@@ -116,7 +115,7 @@ def collect_frame_samples(
         if len(candidates) <= frames_per_camera:
             selected = sorted(candidates, key=lambda item: item.frame_id)
         else:
-            selected = sorted(rng.sample(candidates, frames_per_camera), key=lambda item: item.frame_id)
+            selected = select_diverse_annotated_samples(candidates, frames_per_camera)
 
         sampled.extend(selected)
 
@@ -134,13 +133,15 @@ def collect_uniform_frame_samples(
     video_path: str | Path,
     camera: str,
     frames_per_camera: int,
+    num_candidates: int | None = None,
 ) -> list[FrameSample]:
     num_frames = get_video_num_frames(video_path)
-    if frames_per_camera <= 1:
+    candidate_count = max(frames_per_camera, int(num_candidates or frames_per_camera * 4))
+    if candidate_count <= 1:
         frame_ids = [max(num_frames // 2, 0)]
     else:
-        frame_ids = np.linspace(0, max(num_frames - 1, 0), num=frames_per_camera, dtype=int).tolist()
-    return [
+        frame_ids = np.linspace(0, max(num_frames - 1, 0), num=candidate_count, dtype=int).tolist()
+    candidates = [
         FrameSample(
             frame_id=int(frame_id),
             camera=camera,
@@ -149,6 +150,157 @@ def collect_uniform_frame_samples(
         )
         for frame_id in frame_ids
     ]
+    if len(candidates) <= frames_per_camera:
+        return candidates
+    return select_diverse_raw_samples(video_path=video_path, camera=camera, candidates=candidates, top_k=frames_per_camera)
+
+
+def _bbox_quality_score(sample: FrameSample) -> float:
+    boxes = sample.bboxes
+    if not boxes:
+        return 0.0
+    areas = []
+    center_scores = []
+    x_centers = []
+    heights = []
+    widths = []
+    for item in boxes:
+        x_center, y_center, width, height = [float(x) for x in item["bbox"]]
+        areas.append(width * height)
+        center_dist = float(np.hypot(x_center - 0.5, y_center - 0.5))
+        center_scores.append(max(0.0, 1.0 - center_dist / 0.75))
+        x_centers.append(x_center)
+        heights.append(height)
+        widths.append(width)
+
+    area_score = min(float(sum(areas)) / 0.35, 1.0)
+    center_score = float(np.mean(center_scores))
+    multi_box_score = min(len(boxes) / 2.0, 1.0)
+    score = 0.55 * area_score + 0.25 * center_score + 0.20 * multi_box_score
+
+    if sample.camera == "rear" and len(boxes) >= 2:
+        x_centers = np.asarray(x_centers, dtype=np.float32)
+        heights = np.asarray(heights, dtype=np.float32)
+        widths = np.asarray(widths, dtype=np.float32)
+        separation = float(np.clip((x_centers.max() - x_centers.min()) / 0.55, 0.0, 1.0))
+        height_similarity = 1.0 - float(np.clip(abs(heights.max() - heights.min()) / max(heights.max(), 1e-6), 0.0, 1.0))
+        width_similarity = 1.0 - float(np.clip(abs(widths.max() - widths.min()) / max(widths.max(), 1e-6), 0.0, 1.0))
+        symmetry = 0.5 * height_similarity + 0.5 * width_similarity
+        score += 0.15 * separation + 0.10 * symmetry
+
+    return float(score)
+
+
+def _select_diverse_topk(
+    candidates: list[FrameSample],
+    top_k: int,
+    score_fn,
+) -> list[FrameSample]:
+    ordered = sorted(candidates, key=lambda item: item.frame_id)
+    if len(ordered) <= top_k:
+        return ordered
+
+    scores = [float(score_fn(item)) for item in ordered]
+    bins = np.array_split(np.arange(len(ordered)), top_k)
+    selected_indices: list[int] = []
+    for bin_indices in bins:
+        if len(bin_indices) == 0:
+            continue
+        best_idx = max(bin_indices.tolist(), key=lambda idx: scores[idx])
+        selected_indices.append(int(best_idx))
+
+    selected_set = set(selected_indices)
+    if len(selected_indices) < top_k:
+        remaining = sorted(
+            (idx for idx in range(len(ordered)) if idx not in selected_set),
+            key=lambda idx: scores[idx],
+            reverse=True,
+        )
+        for idx in remaining:
+            selected_indices.append(int(idx))
+            selected_set.add(int(idx))
+            if len(selected_indices) >= top_k:
+                break
+
+    selected = [ordered[idx] for idx in sorted(selected_indices[:top_k], key=lambda idx: ordered[idx].frame_id)]
+    return selected
+
+
+def select_diverse_annotated_samples(candidates: list[FrameSample], top_k: int) -> list[FrameSample]:
+    return _select_diverse_topk(candidates, top_k=top_k, score_fn=_bbox_quality_score)
+
+
+def _read_video_frame_direct(video_path: str | Path, frame_id: int) -> np.ndarray | None:
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        capture.release()
+        return None
+    total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames > 0:
+        target = int(np.clip(frame_id, 0, total_frames - 1))
+    else:
+        target = max(int(frame_id), 0)
+    capture.set(cv2.CAP_PROP_POS_FRAMES, target)
+    ok, frame = capture.read()
+    capture.release()
+    if not ok or frame is None:
+        return None
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
+def _raw_frame_quality_score(frame: np.ndarray, camera: str) -> float:
+    if frame is None or frame.size == 0:
+        return 0.0
+    gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, mask = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return 0.0
+
+    contour = max(contours, key=cv2.contourArea)
+    area = float(cv2.contourArea(contour))
+    height, width = frame.shape[:2]
+    area_ratio = area / max(float(height * width), 1.0)
+    x, y, w, h = cv2.boundingRect(contour)
+    cx = (x + w / 2.0) / max(width, 1)
+    cy = (y + h / 2.0) / max(height, 1)
+    center_dist = float(np.hypot(cx - 0.5, cy - 0.5))
+    center_score = max(0.0, 1.0 - center_dist / 0.75)
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_32F).var())
+    sharpness_score = min(sharpness / 300.0, 1.0)
+
+    score = 0.50 * min(area_ratio / 0.30, 1.0) + 0.25 * center_score + 0.25 * sharpness_score
+    if camera == "rear":
+        crop_mask = mask[y : y + h, x : x + w]
+        if crop_mask.size > 0:
+            half = crop_mask.shape[1] // 2
+            if half > 0:
+                left_mass = float(crop_mask[:, :half].sum())
+                right_mass = float(crop_mask[:, half:].sum())
+                denom = max(left_mass + right_mass, 1.0)
+                symmetry = 1.0 - abs(left_mass - right_mass) / denom
+                score += 0.15 * float(np.clip(symmetry, 0.0, 1.0))
+    return float(score)
+
+
+def select_diverse_raw_samples(
+    video_path: str | Path,
+    camera: str,
+    candidates: list[FrameSample],
+    top_k: int,
+) -> list[FrameSample]:
+    cache: dict[int, float] = {}
+
+    def score_fn(sample: FrameSample) -> float:
+        if sample.frame_id not in cache:
+            frame = _read_video_frame_direct(video_path, sample.frame_id)
+            cache[sample.frame_id] = _raw_frame_quality_score(frame, camera)
+        return cache[sample.frame_id]
+
+    return _select_diverse_topk(candidates, top_k=top_k, score_fn=score_fn)
 
 
 def bbox_yolo_to_xyxy(
@@ -213,6 +365,8 @@ class PigVideoDataset(Dataset):
             self.augmentation_profile.get("disable_geometry_for_synthetic_xshape", True)
         )
         self.affine_prob = float(self.augmentation_profile.get("affine_prob", 0.5))
+        self.raw_candidate_multiplier = int(self.augmentation_profile.get("raw_candidate_multiplier", 4))
+        self.raw_candidate_cap = int(self.augmentation_profile.get("raw_candidate_cap", 32))
 
         self.preprocess = transforms.Compose(
             [
@@ -458,11 +612,13 @@ class PigVideoDataset(Dataset):
         videos = {camera: row[f"{camera}_video"] for camera in CAMERAS}
         sampled_frames: list[FrameSample] = []
         for camera in CAMERAS:
+            candidate_count = min(self.raw_candidate_cap, max(self.frames_per_camera, self.frames_per_camera * self.raw_candidate_multiplier))
             sampled_frames.extend(
                 collect_uniform_frame_samples(
                     video_path=videos[camera],
                     camera=camera,
                     frames_per_camera=self.frames_per_camera,
+                    num_candidates=candidate_count,
                 )
             )
         return sampled_frames
