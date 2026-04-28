@@ -120,7 +120,7 @@
    - `left/right`: задняя нога
    - `rear`: две задние ноги
 4. Каждый кадр кодируется CNN:
-   - `tf_efficientnetv2_s.in21k_ft_in1k`
+   - `efficientnet_b0`
    - `ImageNet pretrained`
 5. Для каждого кадра получаем `4 logits`.
 6. Затем идёт агрегация:
@@ -191,7 +191,7 @@
   - умеет bbox-crop
 - `raw mode`
   - работает без `annotation.json`
-  - равномерно выбирает кадры из видео
+  - выбирает кадры из видео через quality-aware sampling
   - нужен для official `val/test`
 
 ### 4. Preextract frame cache

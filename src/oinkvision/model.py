@@ -44,6 +44,12 @@ class FrameClassifier(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
 
+    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
+        features = self.model.forward_features(x)
+        if features.ndim > 2:
+            features = features.mean(dim=tuple(range(2, features.ndim)))
+        return features
+
     def forward_meta(self, front_meta: torch.Tensor) -> torch.Tensor | None:
         if self.front_meta_head is None:
             return None
@@ -92,6 +98,9 @@ class FrameClassifierWithXShapeAux(nn.Module):
             "logits": self.main_head(features),
             "xshape_aux_logits": self.xshape_aux_head(features).squeeze(-1),
         }
+
+    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
+        return self.encoder(x)
 
     def forward_meta(self, front_meta: torch.Tensor) -> torch.Tensor | None:
         if self.front_meta_head is None:
