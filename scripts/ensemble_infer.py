@@ -161,7 +161,7 @@ def main() -> None:
 
     mean_probs = np.mean(np.stack(probs_per_checkpoint, axis=0), axis=0)
     if args.xshape_specialist_artifact is not None:
-        artifact_payload = torch.load(args.xshape_specialist_artifact, map_location="cpu")
+        artifact_payload = torch.load(args.xshape_specialist_artifact, map_location="cpu", weights_only=False)
         _, rear_embeddings, _ = extract_ensemble_rear_embeddings(
             config=config,
             rows=prepare_raw_nometa_rows(rows),
