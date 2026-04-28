@@ -35,6 +35,10 @@ from oinkvision.xshape_specialist import (
     extract_ensemble_rear_embeddings,
     prepare_raw_nometa_rows,
 )
+from oinkvision.prototype_specialist import (
+    apply_prototype_specialist,
+    extract_ensemble_multiview_embeddings,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--submission-only", action="store_true")
     parser.add_argument("--xshape-specialist-artifact", type=Path, default=None)
+    parser.add_argument("--prototype-specialist-artifact", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -160,6 +165,7 @@ def main() -> None:
         raise ValueError("No checkpoints were provided.")
 
     mean_probs = np.mean(np.stack(probs_per_checkpoint, axis=0), axis=0)
+    prototype_thresholds: list[float] | None = None
     if args.xshape_specialist_artifact is not None:
         artifact_payload = torch.load(args.xshape_specialist_artifact, map_location="cpu", weights_only=False)
         _, rear_embeddings, _ = extract_ensemble_rear_embeddings(
@@ -172,6 +178,20 @@ def main() -> None:
         fusion_alpha = float(artifact_payload.get("fusion_alpha", 0.8))
         mean_probs[:, xshape_idx] = np.maximum(mean_probs[:, xshape_idx], fusion_alpha * specialist_scores)
         thresholds[xshape_idx] = float(artifact_payload.get("decision_threshold", thresholds[xshape_idx]))
+    if args.prototype_specialist_artifact is not None:
+        artifact_payload = torch.load(args.prototype_specialist_artifact, map_location="cpu", weights_only=False)
+        _, all_embeddings, rear_embeddings, _ = extract_ensemble_multiview_embeddings(
+            config=config,
+            rows=prepare_raw_nometa_rows(rows),
+            checkpoints=[str(path) for path in args.checkpoints],
+        )
+        mean_probs, prototype_thresholds = apply_prototype_specialist(
+            mean_probs,
+            all_embeddings=all_embeddings,
+            rear_embeddings=rear_embeddings,
+            artifact_payload=artifact_payload,
+        )
+        thresholds = [float(proto_thr) if proto_thr is not None else thr for thr, proto_thr in zip(thresholds, prototype_thresholds)]
     preds = apply_thresholds(mean_probs, thresholds)
 
     write_predictions(
