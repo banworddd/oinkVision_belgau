@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from oinkvision.constants import LABELS
+from oinkvision.constants import LABELS, get_active_labels
 from oinkvision.dataset import PigVideoDataset, load_annotation, load_index
 from oinkvision.env import apply_env_overrides, get_output_root, load_local_env
 from oinkvision.geometry import aggregate_annotation_geometry
@@ -114,9 +114,11 @@ def maybe_apply_geometry_fusion(
     rows: list[dict[str, Any]],
     probs: np.ndarray,
     config: dict[str, Any],
+    active_labels: list[str] | None = None,
     postprocess_params: dict[str, Any] | None = None,
     skip_labels: set[str] | None = None,
 ) -> np.ndarray:
+    active_labels = list(active_labels or get_active_labels(config))
     cfg = dict(config.get("postprocess", {}))
     if postprocess_params is not None:
         cfg.update(postprocess_params)
@@ -132,7 +134,7 @@ def maybe_apply_geometry_fusion(
         if not annotation_path:
             continue
         features = aggregate_annotation_geometry(load_annotation(annotation_path))
-        for label_idx, label in enumerate(LABELS):
+        for label_idx, label in enumerate(active_labels):
             if label in skip_labels:
                 continue
             label_cfg = per_class_cfg.get(label)
@@ -156,19 +158,21 @@ def maybe_apply_specialist_fusion(
     main_probs: np.ndarray,
     aux_probs: np.ndarray | None,
     config: dict[str, Any],
+    active_labels: list[str] | None = None,
 ) -> tuple[np.ndarray, set[str]]:
+    active_labels = list(active_labels or get_active_labels(config))
     fused = main_probs.copy()
     infer_cfg = dict(config.get("inference", {}))
     specialist_cfg = dict(infer_cfg.get("specialist_fusion", {}))
     skip_labels: set[str] = set()
 
     for label, class_cfg in specialist_cfg.items():
-        if label not in LABELS:
+        if label not in active_labels:
             continue
         class_cfg = dict(class_cfg or {})
         if not bool(class_cfg.get("enabled", False)):
             continue
-        label_idx = LABELS.index(label)
+        label_idx = active_labels.index(label)
         use_aux = bool(class_cfg.get("use_aux", False)) and aux_probs is not None and label == "x_shape"
         w_main = float(class_cfg.get("weight_main", 0.6))
         w_aux = float(class_cfg.get("weight_aux", 0.0 if not use_aux else 0.2))
@@ -193,9 +197,9 @@ def maybe_apply_specialist_fusion(
     if skip_labels:
         return fused, skip_labels
 
-    xshape_idx = LABELS.index("x_shape")
     xshape_aux_blend_weight = float(infer_cfg.get("xshape_aux_blend_weight", 0.0))
-    if aux_probs is not None and xshape_aux_blend_weight > 0.0:
+    if "x_shape" in active_labels and aux_probs is not None and xshape_aux_blend_weight > 0.0:
+        xshape_idx = active_labels.index("x_shape")
         fused[:, xshape_idx] = (
             (1.0 - xshape_aux_blend_weight) * fused[:, xshape_idx] + xshape_aux_blend_weight * aux_probs
         )
@@ -210,6 +214,7 @@ def predict(
     aggregation_spec: dict[str, Any] | None = None,
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     model.eval()
+    active_labels = list(aggregation_spec.get("active_labels", LABELS)) if aggregation_spec is not None else list(LABELS)
     pig_ids: list[str] = []
     all_targets = []
     all_main_probs = []
@@ -230,12 +235,12 @@ def predict(
         flat_images = images.view(batch_size * num_frames, channels, height, width)
         model_output = model(flat_images)
         if isinstance(model_output, dict):
-            frame_logits = model_output["logits"].view(batch_size, num_frames, len(LABELS))
+            frame_logits = model_output["logits"].view(batch_size, num_frames, len(active_labels))
             frame_xshape_aux_logits = model_output.get("xshape_aux_logits")
             if frame_xshape_aux_logits is not None:
                 frame_xshape_aux_logits = frame_xshape_aux_logits.view(batch_size, num_frames)
         else:
-            frame_logits = model_output.view(batch_size, num_frames, len(LABELS))
+            frame_logits = model_output.view(batch_size, num_frames, len(active_labels))
             frame_xshape_aux_logits = None
         logits = aggregate_frame_logits(frame_logits, frame_mask, aggregation_spec=aggregation_spec)
         if front_meta is not None and front_meta_weight > 0.0 and hasattr(model, "forward_meta"):
@@ -272,27 +277,16 @@ def write_predictions(
     probs: np.ndarray,
     preds: np.ndarray,
     output_csv: Path,
+    labels: list[str],
     submission_only: bool = False,
 ) -> None:
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     with output_csv.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         if submission_only:
-            writer.writerow(["id", "bad_posture", "bumps", "soft_pastern", "x_shape"])
+            writer.writerow(["id", *labels])
         else:
-            writer.writerow(
-                [
-                    "id",
-                    "bad_posture_prob",
-                    "bumps_prob",
-                    "soft_pastern_prob",
-                    "x_shape_prob",
-                    "bad_posture",
-                    "bumps",
-                    "soft_pastern",
-                    "x_shape",
-                ]
-            )
+            writer.writerow(["id", *[f"{label}_prob" for label in labels], *labels])
         for pig_id, prob_row, pred_row in zip(pig_ids, probs, preds):
             if submission_only:
                 writer.writerow([pig_id, *[int(x) for x in pred_row]])
@@ -317,6 +311,7 @@ def main() -> None:
     config = load_config(args.config)
     device = choose_device()
     aggregation_spec = build_aggregation_spec(config, device)
+    active_labels = get_active_labels(config)
 
     model = build_model(config).to(device)
     state_dict = torch.load(args.checkpoint, map_location=device)
@@ -345,27 +340,37 @@ def main() -> None:
         thresholds = [float(x) for x in threshold_data["thresholds"]]
         postprocess_params = threshold_data.get("postprocess")
     else:
-        thresholds = [float(config["inference"]["thresholds"][label]) for label in LABELS]
+        thresholds = [float(config["inference"]["thresholds"][label]) for label in active_labels]
 
     probs, specialist_skip_labels = maybe_apply_specialist_fusion(
         rows=rows,
         main_probs=main_probs,
         aux_probs=aux_probs,
         config=config,
+        active_labels=active_labels,
     )
     probs = maybe_apply_geometry_fusion(
         rows,
         probs,
         config,
+        active_labels=active_labels,
         postprocess_params=postprocess_params,
         skip_labels=specialist_skip_labels if specialist_skip_labels else None,
     )
     preds = apply_thresholds(probs, thresholds)
     metrics = None
     if bool(has_target.all()):
-        metrics = compute_macro_f1(targets, probs, thresholds=thresholds)
+        target_indices = [LABELS.index(label) for label in active_labels]
+        metrics = compute_macro_f1(targets[:, target_indices], probs, thresholds=thresholds, labels=active_labels)
 
-    write_predictions(pig_ids, probs, preds, args.output_csv, submission_only=bool(args.submission_only))
+    write_predictions(
+        pig_ids,
+        probs,
+        preds,
+        args.output_csv,
+        labels=active_labels,
+        submission_only=bool(args.submission_only),
+    )
     if metrics is not None:
         write_metrics(metrics, args.metrics_json)
 

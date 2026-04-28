@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 import torch
 
+from oinkvision.constants import LABELS, get_active_labels
 from oinkvision.infer import build_loader, load_config, load_rows_for_index, maybe_apply_geometry_fusion, maybe_apply_specialist_fusion, predict
 from oinkvision.metrics import compute_macro_f1, optimize_thresholds
 from oinkvision.model import build_model
@@ -35,6 +36,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    active_labels = get_active_labels(config)
     device = choose_device()
     aggregation_spec = build_aggregation_spec(config, device)
 
@@ -65,26 +67,30 @@ def main() -> None:
         main_probs=main_probs,
         aux_probs=aux_probs,
         config=config,
+        active_labels=active_labels,
     )
     probs = maybe_apply_geometry_fusion(
         rows,
         probs,
         config,
+        active_labels=active_labels,
         skip_labels=specialist_skip_labels if specialist_skip_labels else None,
     )
 
-    base_thresholds = [float(config["inference"]["thresholds"][k]) for k in ["bad_posture", "bumps", "soft_pastern", "x_shape"]]
-    base_metrics = compute_macro_f1(targets, probs, thresholds=base_thresholds)
-    tuned_metrics = optimize_thresholds(targets, probs)
+    target_indices = [LABELS.index(label) for label in active_labels]
+    targets = targets[:, target_indices]
+    base_thresholds = [float(config["inference"]["thresholds"][label]) for label in active_labels]
+    base_metrics = compute_macro_f1(targets, probs, thresholds=base_thresholds, labels=active_labels)
+    tuned_metrics = optimize_thresholds(targets, probs, labels=active_labels)
     supports = tuned_metrics.get("per_class_support", {})
     fallback_cfg = dict(config.get("inference", {}).get("threshold_fallbacks", {}))
     min_support = int(fallback_cfg.get("min_support", 1))
     fallback_thresholds_cfg = dict(fallback_cfg.get("thresholds", {}))
     guarded_thresholds = list(tuned_metrics["thresholds"])
-    for idx, label in enumerate(["bad_posture", "bumps", "soft_pastern", "x_shape"]):
+    for idx, label in enumerate(active_labels):
         if int(supports.get(label, 0)) < min_support and label in fallback_thresholds_cfg:
             guarded_thresholds[idx] = float(fallback_thresholds_cfg[label])
-    guarded_metrics = compute_macro_f1(targets, probs, thresholds=guarded_thresholds)
+    guarded_metrics = compute_macro_f1(targets, probs, thresholds=guarded_thresholds, labels=active_labels)
     payload = {
         "base_metrics": base_metrics,
         "tuned_metrics": tuned_metrics,

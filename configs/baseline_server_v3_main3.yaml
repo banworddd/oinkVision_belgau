@@ -1,0 +1,126 @@
+seed: 42
+
+paths:
+  data_root: data
+  train_annotation_dir: data/train/annotation
+  output_dir: server_run_v3_main3
+
+labels:
+  - bad_posture
+  - bumps
+  - soft_pastern
+  - x_shape
+
+cameras:
+  - top
+  - right
+  - left
+  - rear
+
+model:
+  backbone: efficientnet_b0
+  pretrained: true
+  num_classes: 3
+  active_labels:
+    - bad_posture
+    - bumps
+    - soft_pastern
+  use_xshape_aux_head: false
+
+front_metadata:
+  enabled: false
+  dim: 8
+  hidden_dim: 16
+  dropout: 0.1
+  weight: 0.0
+
+data:
+  image_size: 224
+  frames_per_camera: 12
+  use_bbox_crops: true
+  frame_cache_dir: frame_cache
+
+augmentation:
+  brightness: 0.12
+  contrast: 0.12
+  saturation: 0.08
+  degrees: 4.0
+  translate: 0.04
+  scale_min: 0.96
+  scale_max: 1.04
+  affine_prob: 0.5
+  bbox_crop_jitter: 0.03
+  rear_bbox_crop_jitter: 0.03
+  xshape_bbox_crop_jitter: 0.04
+  detector_crop:
+    enabled: true
+    min_area_ratio: 0.02
+    expand_ratio: 0.15
+  rear_view_normalization:
+    enabled: true
+    clahe_clip_limit: 2.0
+    clahe_tile: 8
+
+train:
+  valid_size: 0.2
+  batch_size: 8
+  num_workers: 4
+  epochs: 10
+  lr: 0.0002
+  raw_sample_ratio: 0.35
+  train_augmentations: true
+  use_weighted_sampler: true
+  sampler_power: 0.7
+  sampler_max_weight: 8.0
+  sampler_class_boosts:
+    bad_posture: 1.2
+    bumps: 1.0
+    soft_pastern: 2.2
+    x_shape: 1.0
+  split_retry_attempts: 80
+  split_min_valid_support:
+    bad_posture: 1
+    soft_pastern: 1
+  xshape_aux_weight: 0.0
+  loss:
+    type: asl
+    gamma_pos: 0.0
+    gamma_neg: 2.0
+    clip: 0.03
+
+aggregation:
+  default_frame_mode: mean
+  camera_weights:
+    bad_posture:
+      top: 0.2
+      right: 0.3
+      left: 0.3
+      rear: 0.2
+    bumps:
+      top: 0.2
+      right: 0.3
+      left: 0.3
+      rear: 0.2
+    soft_pastern:
+      top: 0.1
+      right: 0.4
+      left: 0.4
+      rear: 0.1
+
+inference:
+  xshape_aux_blend_weight: 0.0
+  specialist_fusion: {}
+  threshold_fallbacks:
+    min_support: 1
+    thresholds:
+      bad_posture: 0.35
+      bumps: 0.10
+      soft_pastern: 0.35
+  thresholds:
+    bad_posture: 0.5
+    bumps: 0.5
+    soft_pastern: 0.5
+
+postprocess:
+  enable_geometry_fusion: false
+  geometry_fusion: {}

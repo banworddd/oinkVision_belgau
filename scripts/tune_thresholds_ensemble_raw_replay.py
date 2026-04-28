@@ -17,7 +17,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from oinkvision.constants import LABELS
+from oinkvision.constants import LABELS, get_active_labels
 from oinkvision.dataset import FRONT_META_FIELDS, PigVideoDataset, load_index
 from oinkvision.env import get_output_root, load_local_env
 from oinkvision.infer import (
@@ -57,6 +57,7 @@ def prepare_raw_nometa_rows(rows: list[dict]) -> list[dict]:
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    active_labels = get_active_labels(config)
     device = choose_device()
     aggregation_spec = build_aggregation_spec(config, device)
     threshold_grid = np.arange(float(args.grid_step), 1.0, float(args.grid_step), dtype=np.float32)
@@ -108,11 +109,13 @@ def main() -> None:
             main_probs=main_probs,
             aux_probs=aux_probs,
             config=config,
+            active_labels=active_labels,
         )
         probs = maybe_apply_geometry_fusion(
             rows=rows,
             probs=probs,
             config=config,
+            active_labels=active_labels,
             skip_labels=specialist_skip_labels if specialist_skip_labels else None,
         )
         probs_per_checkpoint.append(probs)
@@ -127,10 +130,12 @@ def main() -> None:
         raise ValueError("Raw replay threshold tuning requires labeled rows.")
 
     probs = np.mean(np.stack(probs_per_checkpoint, axis=0), axis=0)
+    target_indices = [LABELS.index(label) for label in active_labels]
+    targets_reference = targets_reference[:, target_indices]
 
     best_thresholds: list[float] = []
     search_scores: dict[str, float] = {}
-    for class_idx, label in enumerate(LABELS):
+    for class_idx, label in enumerate(active_labels):
         best_threshold = 0.5
         best_score = -1.0
         class_targets = targets_reference[:, class_idx]
@@ -144,7 +149,7 @@ def main() -> None:
         best_thresholds.append(best_threshold)
         search_scores[label] = best_score
 
-    tuned_metrics = compute_macro_f1(targets_reference, probs, thresholds=best_thresholds)
+    tuned_metrics = compute_macro_f1(targets_reference, probs, thresholds=best_thresholds, labels=active_labels)
     payload = {
         "mode": "raw_nometa_ensemble",
         "index_path": str(args.index_path),

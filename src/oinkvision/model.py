@@ -8,6 +8,8 @@ import timm
 import torch
 from torch import nn
 
+from .constants import get_active_labels
+
 
 class FrameClassifier(nn.Module):
     """Simple frame-level multi-label classifier."""
@@ -110,6 +112,7 @@ class FrameClassifierWithXShapeAux(nn.Module):
 
 def build_model(config: dict[str, Any]) -> nn.Module:
     model_cfg = config["model"]
+    active_labels = get_active_labels(config)
     front_meta_cfg = config.get("front_metadata", {})
     use_front_meta = bool(front_meta_cfg.get("enabled", False))
     front_meta_dim = int(front_meta_cfg.get("dim", 8))
@@ -119,7 +122,7 @@ def build_model(config: dict[str, Any]) -> nn.Module:
         return FrameClassifierWithXShapeAux(
             backbone_name=model_cfg["backbone"],
             pretrained=bool(model_cfg["pretrained"]),
-            num_classes=int(model_cfg["num_classes"]),
+            num_classes=int(model_cfg.get("num_classes", len(active_labels))),
             use_front_meta=use_front_meta,
             front_meta_dim=front_meta_dim,
             front_meta_hidden_dim=front_meta_hidden_dim,
@@ -128,7 +131,7 @@ def build_model(config: dict[str, Any]) -> nn.Module:
     return FrameClassifier(
         backbone_name=model_cfg["backbone"],
         pretrained=bool(model_cfg["pretrained"]),
-        num_classes=int(model_cfg["num_classes"]),
+        num_classes=int(model_cfg.get("num_classes", len(active_labels))),
         use_front_meta=use_front_meta,
         front_meta_dim=front_meta_dim,
         front_meta_hidden_dim=front_meta_hidden_dim,

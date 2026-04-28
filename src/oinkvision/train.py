@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from oinkvision.constants import CAMERAS, LABELS
+from oinkvision.constants import CAMERAS, LABELS, get_active_labels
 from oinkvision.dataset import PigVideoDataset, load_index
 from oinkvision.env import apply_env_overrides, get_output_root, load_local_env
 from oinkvision.metrics import compute_macro_f1
@@ -331,18 +331,19 @@ class AsymmetricLoss(nn.Module):
 
 def build_aggregation_spec(config: dict[str, Any], device: torch.device) -> dict[str, Any]:
     agg_cfg = config.get("aggregation", {})
+    active_labels = get_active_labels(config)
     cameras = list(config.get("cameras", CAMERAS))
     frames_per_camera = int(config["data"]["frames_per_camera"])
     topk = int(agg_cfg.get("topk", 2))
 
     default_frame_mode = str(agg_cfg.get("default_frame_mode", "mean"))
     frame_mode_map = agg_cfg.get("frame_modes", {})
-    frame_modes = [str(frame_mode_map.get(label, default_frame_mode)) for label in LABELS]
+    frame_modes = [str(frame_mode_map.get(label, default_frame_mode)) for label in active_labels]
 
     default_camera_weights = agg_cfg.get("default_camera_weights", {camera: 1.0 for camera in cameras})
     camera_weights_cfg = agg_cfg.get("camera_weights", {})
     camera_weights = []
-    for label in LABELS:
+    for label in active_labels:
         label_weights = camera_weights_cfg.get(label, default_camera_weights)
         camera_weights.append([float(label_weights.get(camera, default_camera_weights.get(camera, 1.0))) for camera in cameras])
 
@@ -354,6 +355,7 @@ def build_aggregation_spec(config: dict[str, Any], device: torch.device) -> dict
         "camera_weights": torch.tensor(camera_weights, dtype=torch.float32, device=device),
         "xshape_aux_weight": float(config.get("train", {}).get("xshape_aux_weight", 0.0)),
         "front_meta_weight": float(config.get("front_metadata", {}).get("weight", 0.0)),
+        "active_labels": active_labels,
     }
 
 
@@ -476,11 +478,14 @@ def run_epoch(
 
     aux_weight = float(aggregation_spec.get("xshape_aux_weight", 0.0)) if aggregation_spec is not None else 0.0
     front_meta_weight = float(aggregation_spec.get("front_meta_weight", 0.0)) if aggregation_spec is not None else 0.0
+    active_labels = list(aggregation_spec.get("active_labels", LABELS)) if aggregation_spec is not None else list(LABELS)
 
     for batch in tqdm(loader, leave=False):
         images = batch["images"].to(device)
         frame_mask = batch["frame_mask"].to(device)
         targets = batch["target"].to(device)
+        target_indices = [LABELS.index(label) for label in active_labels]
+        targets = targets[:, target_indices]
         front_meta = batch.get("front_meta")
         if front_meta is not None:
             front_meta = front_meta.to(device)
@@ -491,12 +496,12 @@ def run_epoch(
         with torch.set_grad_enabled(is_train):
             model_output = model(flat_images)
             if isinstance(model_output, dict):
-                frame_logits = model_output["logits"].view(batch_size, num_frames, len(LABELS))
+                frame_logits = model_output["logits"].view(batch_size, num_frames, len(active_labels))
                 frame_xshape_aux_logits = model_output.get("xshape_aux_logits")
                 if frame_xshape_aux_logits is not None:
                     frame_xshape_aux_logits = frame_xshape_aux_logits.view(batch_size, num_frames)
             else:
-                frame_logits = model_output.view(batch_size, num_frames, len(LABELS))
+                frame_logits = model_output.view(batch_size, num_frames, len(active_labels))
                 frame_xshape_aux_logits = None
             logits = aggregate_frame_logits(frame_logits, frame_mask, aggregation_spec=aggregation_spec)
             if front_meta is not None and front_meta_weight > 0.0 and hasattr(model, "forward_meta"):
@@ -504,13 +509,13 @@ def run_epoch(
                 if meta_logits is not None:
                     logits = logits + front_meta_weight * meta_logits
             loss = criterion(logits, targets)
-            if frame_xshape_aux_logits is not None and aux_weight > 0.0:
+            if frame_xshape_aux_logits is not None and aux_weight > 0.0 and "x_shape" in active_labels:
                 xshape_aux_logits = aggregate_rear_xshape_aux_logits(
                     frame_xshape_aux_logits,
                     frame_mask=frame_mask,
                     aggregation_spec=aggregation_spec,
                 )
-                xshape_targets = targets[:, LABELS.index("x_shape")]
+                xshape_targets = targets[:, active_labels.index("x_shape")]
                 aux_loss = nn.functional.binary_cross_entropy_with_logits(xshape_aux_logits, xshape_targets)
                 loss = loss + aux_weight * aux_loss
 
@@ -568,6 +573,7 @@ def main() -> None:
             }
         )
     aggregation_spec = build_aggregation_spec(config, device)
+    active_labels = get_active_labels(config)
 
     loss_cfg = dict(config["train"].get("loss", {}))
     loss_type = str(loss_cfg.get("type", "bce")).lower()
@@ -597,7 +603,7 @@ def main() -> None:
     early_stopping_patience = int(config["train"].get("early_stopping_patience", 0))
     history = []
 
-    thresholds = [float(config["inference"]["thresholds"][label]) for label in LABELS]
+    thresholds = [float(config["inference"]["thresholds"][label]) for label in active_labels]
 
     for epoch in range(1, int(config["train"]["epochs"]) + 1):
         train_loss, _, _ = run_epoch(model, train_loader, optimizer, criterion, device, aggregation_spec=aggregation_spec)
@@ -609,7 +615,7 @@ def main() -> None:
             device,
             aggregation_spec=aggregation_spec,
         )
-        metrics = compute_macro_f1(valid_targets, valid_probs, thresholds=thresholds)
+        metrics = compute_macro_f1(valid_targets, valid_probs, thresholds=thresholds, labels=active_labels)
 
         epoch_result = {
             "epoch": epoch,

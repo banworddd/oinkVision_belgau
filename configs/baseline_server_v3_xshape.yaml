@@ -1,0 +1,116 @@
+seed: 42
+
+paths:
+  data_root: data
+  train_annotation_dir: data/train/annotation
+  output_dir: server_run_v3_xshape
+
+labels:
+  - bad_posture
+  - bumps
+  - soft_pastern
+  - x_shape
+
+cameras:
+  - top
+  - right
+  - left
+  - rear
+
+model:
+  backbone: efficientnet_b0
+  pretrained: true
+  num_classes: 1
+  active_labels:
+    - x_shape
+  use_xshape_aux_head: true
+
+front_metadata:
+  enabled: false
+  dim: 8
+  hidden_dim: 16
+  dropout: 0.1
+  weight: 0.0
+
+data:
+  image_size: 224
+  frames_per_camera: 12
+  use_bbox_crops: true
+  frame_cache_dir: frame_cache
+
+augmentation:
+  brightness: 0.12
+  contrast: 0.12
+  saturation: 0.08
+  degrees: 4.0
+  translate: 0.04
+  scale_min: 0.96
+  scale_max: 1.04
+  affine_prob: 0.5
+  bbox_crop_jitter: 0.03
+  rear_bbox_crop_jitter: 0.05
+  xshape_bbox_crop_jitter: 0.06
+  xshape_synthetic_flag_key: is_xshape_augmented
+  color_only_for_synthetic_xshape: true
+  disable_geometry_for_synthetic_xshape: true
+  detector_crop:
+    enabled: true
+    min_area_ratio: 0.02
+    expand_ratio: 0.15
+  rear_view_normalization:
+    enabled: true
+    clahe_clip_limit: 2.0
+    clahe_tile: 8
+
+train:
+  valid_size: 0.2
+  batch_size: 8
+  num_workers: 4
+  epochs: 10
+  lr: 0.0002
+  raw_sample_ratio: 0.35
+  train_augmentations: true
+  use_weighted_sampler: true
+  sampler_power: 0.7
+  sampler_max_weight: 10.0
+  sampler_class_boosts:
+    bad_posture: 1.0
+    bumps: 1.0
+    soft_pastern: 1.0
+    x_shape: 6.0
+  xshape_index_augmentation:
+    enabled: true
+    target_xshape_count: 12
+    max_copies_per_row: 24
+  split_retry_attempts: 80
+  xshape_aux_weight: 0.8
+  loss:
+    type: asl
+    gamma_pos: 0.0
+    gamma_neg: 2.0
+    clip: 0.03
+
+aggregation:
+  default_frame_mode: mean
+  frame_modes:
+    x_shape: max
+  camera_weights:
+    x_shape:
+      top: 0.0
+      right: 0.1
+      left: 0.1
+      rear: 0.8
+
+inference:
+  xshape_aux_blend_weight: 0.5
+  specialist_fusion: {}
+  threshold_fallbacks:
+    min_support: 1
+    thresholds:
+      x_shape: 0.40
+  thresholds:
+    x_shape: 0.5
+
+postprocess:
+  enable_geometry_fusion: false
+  geometry_fusion: {}

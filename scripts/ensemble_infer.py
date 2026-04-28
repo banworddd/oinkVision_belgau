@@ -17,7 +17,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from oinkvision.constants import LABELS
+from oinkvision.constants import LABELS, get_active_labels
 from oinkvision.infer import (
     build_loader,
     load_config,
@@ -58,27 +58,16 @@ def write_predictions(
     probs: np.ndarray,
     preds: np.ndarray,
     output_csv: Path,
+    labels: list[str],
     submission_only: bool = False,
 ) -> None:
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     with output_csv.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         if submission_only:
-            writer.writerow(["id", "bad_posture", "bumps", "soft_pastern", "x_shape"])
+            writer.writerow(["id", *labels])
         else:
-            writer.writerow(
-                [
-                    "id",
-                    "bad_posture_prob",
-                    "bumps_prob",
-                    "soft_pastern_prob",
-                    "x_shape_prob",
-                    "bad_posture",
-                    "bumps",
-                    "soft_pastern",
-                    "x_shape",
-                ]
-            )
+            writer.writerow(["id", *[f"{label}_prob" for label in labels], *labels])
         for pig_id, prob_row, pred_row in zip(pig_ids, probs, preds):
             if submission_only:
                 writer.writerow([pig_id, *[int(x) for x in pred_row]])
@@ -93,8 +82,9 @@ def write_metrics(metrics: dict[str, Any], path: Path) -> None:
 
 
 def load_thresholds(config: dict[str, Any], thresholds_json: Path | None) -> tuple[list[float], dict[str, Any] | None]:
+    active_labels = get_active_labels(config)
     if thresholds_json is None:
-        thresholds = [float(config["inference"]["thresholds"][label]) for label in LABELS]
+        thresholds = [float(config["inference"]["thresholds"][label]) for label in active_labels]
         return thresholds, None
     with thresholds_json.open("r", encoding="utf-8") as f:
         payload = json.load(f)
@@ -104,6 +94,7 @@ def load_thresholds(config: dict[str, Any], thresholds_json: Path | None) -> tup
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    active_labels = get_active_labels(config)
     device = choose_device()
     aggregation_spec = build_aggregation_spec(config, device)
     rows = load_rows_for_index(args.index_path, args.limit)
@@ -138,11 +129,13 @@ def main() -> None:
             main_probs=main_probs,
             aux_probs=aux_probs,
             config=config,
+            active_labels=active_labels,
         )
         probs = maybe_apply_geometry_fusion(
             rows,
             probs,
             config,
+            active_labels=active_labels,
             postprocess_params=postprocess_params,
             skip_labels=specialist_skip_labels if specialist_skip_labels else None,
         )
@@ -172,7 +165,8 @@ def main() -> None:
             rear_embeddings=rear_embeddings,
             artifact_payload=artifact_payload,
         )
-        thresholds[LABELS.index("x_shape")] = float(xshape_threshold)
+        if "x_shape" in active_labels:
+            thresholds[active_labels.index("x_shape")] = float(xshape_threshold)
     preds = apply_thresholds(mean_probs, thresholds)
 
     write_predictions(
@@ -180,12 +174,19 @@ def main() -> None:
         mean_probs,
         preds,
         args.output_csv,
+        labels=active_labels,
         submission_only=bool(args.submission_only),
     )
 
     metrics = None
     if has_target_reference is not None and bool(has_target_reference.all()):
-        metrics = compute_macro_f1(targets_reference, mean_probs, thresholds=thresholds)
+        target_indices = [LABELS.index(label) for label in active_labels]
+        metrics = compute_macro_f1(
+            targets_reference[:, target_indices],
+            mean_probs,
+            thresholds=thresholds,
+            labels=active_labels,
+        )
         write_metrics(metrics, args.metrics_json)
 
     print(f"Predictions saved to: {args.output_csv}")
