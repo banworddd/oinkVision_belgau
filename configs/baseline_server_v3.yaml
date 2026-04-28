@@ -32,7 +32,7 @@ front_metadata:
 
 data:
   image_size: 224
-  frames_per_camera: 6
+  frames_per_camera: 12
   use_bbox_crops: true
   frame_cache_dir: frame_cache
 
