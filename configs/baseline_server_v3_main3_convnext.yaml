@@ -3,7 +3,7 @@ seed: 42
 paths:
   data_root: data
   train_annotation_dir: data/train/annotation
-  output_dir: server_run_v3
+  output_dir: server_run_v3_main3_convnext
 
 labels:
   - bad_posture
@@ -18,17 +18,21 @@ cameras:
   - rear
 
 model:
-  backbone: efficientnet_b0
+  backbone: convnext_small.fb_in22k
   pretrained: true
-  num_classes: 4
-  use_xshape_aux_head: true
+  num_classes: 3
+  active_labels:
+    - bad_posture
+    - bumps
+    - soft_pastern
+  use_xshape_aux_head: false
 
 front_metadata:
-  enabled: true
+  enabled: false
   dim: 8
   hidden_dim: 16
   dropout: 0.1
-  weight: 0.05
+  weight: 0.0
 
 data:
   image_size: 224
@@ -48,9 +52,6 @@ augmentation:
   bbox_crop_jitter: 0.03
   rear_bbox_crop_jitter: 0.03
   xshape_bbox_crop_jitter: 0.04
-  xshape_synthetic_flag_key: is_xshape_augmented
-  color_only_for_synthetic_xshape: true
-  disable_geometry_for_synthetic_xshape: true
   detector_crop:
     enabled: true
     min_area_ratio: 0.02
@@ -75,64 +76,51 @@ train:
     bad_posture: 1.2
     bumps: 1.0
     soft_pastern: 2.2
-    x_shape: 4.5
-  xshape_index_augmentation:
-    enabled: true
-    target_xshape_count: 12
-    max_copies_per_row: 24
+    x_shape: 1.0
   split_retry_attempts: 80
   split_min_valid_support:
     bad_posture: 1
     soft_pastern: 1
-  xshape_aux_weight: 0.55
+  xshape_aux_weight: 0.0
   loss:
     type: asl
     gamma_pos: 0.0
     gamma_neg: 2.0
     clip: 0.03
 
-inference:
-  xshape_aux_blend_weight: 0.35
-  specialist_fusion:
-    x_shape:
-      enabled: true
-      use_aux: true
-      weight_main: 0.35
-      weight_aux: 0.25
-      weight_geometry: 0.40
-      geometry_feature: max_xshape_score
+aggregation:
+  default_frame_mode: mean
+  camera_weights:
+    bad_posture:
+      top: 0.2
+      right: 0.3
+      left: 0.3
+      rear: 0.2
+    bumps:
+      top: 0.2
+      right: 0.3
+      left: 0.3
+      rear: 0.2
     soft_pastern:
-      enabled: true
-      use_aux: false
-      weight_main: 0.60
-      weight_aux: 0.0
-      weight_geometry: 0.40
-      geometry_feature: max_soft_pastern_score
+      top: 0.1
+      right: 0.4
+      left: 0.4
+      rear: 0.1
+
+inference:
+  xshape_aux_blend_weight: 0.0
+  specialist_fusion: {}
   threshold_fallbacks:
     min_support: 1
     thresholds:
       bad_posture: 0.35
       bumps: 0.10
       soft_pastern: 0.35
-      x_shape: 0.40
   thresholds:
     bad_posture: 0.5
     bumps: 0.5
     soft_pastern: 0.5
-    x_shape: 0.5
 
 postprocess:
-  enable_geometry_fusion: true
-  geometry_fusion:
-    bad_posture:
-      feature: max_bad_posture_score
-      mode: weighted_sum
-      alpha: 0.0
-    soft_pastern:
-      feature: max_soft_pastern_score
-      mode: max_scaled
-      alpha: 0.5
-    x_shape:
-      feature: max_xshape_score
-      mode: max_scaled
-      alpha: 1.0
+  enable_geometry_fusion: false
+  geometry_fusion: {}

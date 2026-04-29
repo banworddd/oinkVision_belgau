@@ -3,7 +3,7 @@ seed: 42
 paths:
   data_root: data
   train_annotation_dir: data/train/annotation
-  output_dir: server_run_v3
+  output_dir: server_run_v3_convnext
 
 labels:
   - bad_posture
@@ -18,7 +18,7 @@ cameras:
   - rear
 
 model:
-  backbone: efficientnet_b0
+  backbone: convnext_small.fb_in22k
   pretrained: true
   num_classes: 4
   use_xshape_aux_head: true

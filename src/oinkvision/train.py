@@ -206,6 +206,7 @@ def build_dataloaders_from_rows(
     valid_rows: list[dict[str, Any]],
     index_path: Path,
 ) -> tuple[DataLoader, DataLoader]:
+    active_labels = get_active_labels(config)
     common_kwargs = {
         "index_path": index_path,
         "frames_per_camera": config["data"]["frames_per_camera"],
@@ -234,11 +235,11 @@ def build_dataloaders_from_rows(
         sampler_max_weight = float(config["train"].get("sampler_max_weight", 10.0))
         class_weight_boosts = {
             label: float(config["train"].get("sampler_class_boosts", {}).get(label, 1.0))
-            for label in LABELS
+            for label in active_labels
         }
         label_counts = {
             label: max(sum(int(row[label]) for row in train_rows), 1)
-            for label in LABELS
+            for label in active_labels
         }
         class_weights = {
             label: min((len(train_rows) / count) ** sampler_power, sampler_max_weight) * class_weight_boosts[label]
@@ -246,7 +247,7 @@ def build_dataloaders_from_rows(
         }
         sample_weights = []
         for row in train_rows:
-            positive_weights = [class_weights[label] for label in LABELS if int(row[label]) == 1]
+            positive_weights = [class_weights[label] for label in active_labels if int(row[label]) == 1]
             sample_weights.append(max(positive_weights) if positive_weights else 1.0)
         sampler = WeightedRandomSampler(
             weights=torch.tensor(sample_weights, dtype=torch.double),
@@ -292,10 +293,16 @@ def build_dataloaders(
     return build_dataloaders_from_rows(config, train_rows, valid_rows, index_path)
 
 
-def compute_pos_weight(loader: DataLoader, device: torch.device) -> torch.Tensor:
+def compute_pos_weight(
+    loader: DataLoader,
+    device: torch.device,
+    active_labels: list[str] | None = None,
+) -> torch.Tensor:
+    active_labels = list(active_labels or LABELS)
+    target_indices = [LABELS.index(label) for label in active_labels]
     targets = []
     for batch in loader:
-        targets.append(batch["target"])
+        targets.append(batch["target"][:, target_indices])
     target_tensor = torch.cat(targets, dim=0)
     positives = target_tensor.sum(dim=0)
     negatives = target_tensor.shape[0] - positives
@@ -584,7 +591,7 @@ def main() -> None:
             clip=float(loss_cfg.get("clip", 0.05)),
         )
     else:
-        pos_weight = compute_pos_weight(train_loader, device)
+        pos_weight = compute_pos_weight(train_loader, device, active_labels=active_labels)
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(config["train"]["lr"]))
     scheduler = None
